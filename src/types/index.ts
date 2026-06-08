@@ -35,6 +35,24 @@ export interface Article {
   scores?: ArticleScore[]
 }
 
+export type ArticleNavigationScope =
+  | 'all'
+  | 'unread'
+  | 'starred'
+  | 'favorite'
+  | 'feed'
+  | 'tag'
+  | 'group'
+  | 'search'
+
+export interface ArticleNavigationContext {
+  scope: ArticleNavigationScope
+  feedId?: number
+  tagId?: number
+  groupId?: number
+  query?: string
+}
+
 export interface ArticleScore {
   id: number
   articleId: number
@@ -58,19 +76,11 @@ export interface FeedCategory {
   feeds: Feed[]
 }
 
-export interface Settings {
-  theme: 'light' | 'dark' | 'system'
-  autoUpdate: boolean
-  updateInterval: number
-  maxArticles: number
-}
-
 export interface AppState {
   feeds: Feed[]
   articles: Article[]
   currentFeed: Feed | null
   currentArticle: Article | null
-  settings: Settings
   isLoading: boolean
   error: string | null
 }

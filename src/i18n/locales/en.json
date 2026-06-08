@@ -181,6 +181,8 @@
   },
   "shortcutSettings": {
     "title": "Keyboard Shortcuts",
+    "enableShortcuts": "Enable keyboard shortcuts",
+    "enableShortcutsDesc": "When disabled, keyboard shortcuts will not respond",
     "resetDefaults": "Reset Defaults",
     "nextArticle": "Next Article",
     "prevArticle": "Previous Article",
@@ -565,6 +567,8 @@
   },
   "videoEmbed": {
     "loadFailed": "Video failed to load. Please open the original link to watch.",
+    "clickToLoad": "Video is not loaded by default. Click to create the player.",
+    "loadVideo": "Load Video",
     "openOriginal": "Open Original Video"
   },
   "timeAgo": {

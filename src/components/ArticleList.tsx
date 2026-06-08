@@ -7,7 +7,7 @@ import { invoke } from '@/utils/tauri'
 import { toast } from '@/stores/toastStore'
 import { Article, Feed } from '@/types'
 import ArticleListPage from './ArticleListPage'
-import { enqueueAutoSummary } from '@/components/ai/AutoSummaryWorker'
+import { processNewArticles } from '@/services/runtime'
 
 export default function ArticleList() {
   const { t } = useTranslation()
@@ -26,8 +26,7 @@ export default function ArticleList() {
 
     try {
       const newArticles = await invoke<Article[]>('update_feed', { feedId: feedIdNum, rsshubDomain })
-      enqueueAutoSummary(newArticles.map((a) => a.id))
-      window.dispatchEvent(new CustomEvent('ai-work-available'))
+      await processNewArticles(newArticles.map((article) => article.id))
     } catch (error) {
       updateError = error
       console.error('Failed to update feed:', error)

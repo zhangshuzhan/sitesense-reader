@@ -3,7 +3,7 @@ import { useSettingsStore } from '@/stores/settingsStore'
 
 export default function ShortcutSettings() {
   const { t } = useTranslation()
-  const { shortcuts, setShortcut, resetShortcuts } = useSettingsStore()
+  const { shortcuts, shortcutsEnabled, setShortcutsEnabled, setShortcut, resetShortcuts } = useSettingsStore()
   const getShortcutList = (t: any) => [
     { key: 'next', label: t('shortcutSettings.nextArticle') },
     { key: 'prev', label: t('shortcutSettings.prevArticle') },
@@ -11,9 +11,7 @@ export default function ShortcutSettings() {
     { key: 'toggleStar', label: t('shortcutSettings.toggleStar') },
     { key: 'openOriginal', label: t('shortcutSettings.openOriginal') },
     { key: 'search', label: t('shortcutSettings.search') + ' (⌘/Ctrl +)' },
-    { key: 'refresh', label: t('shortcutSettings.refresh') + ' (⌘/Ctrl +)' },
     { key: 'settings', label: t('shortcutSettings.openSettings') + ' (⌘/Ctrl +)' },
-    { key: 'addFeed', label: t('shortcutSettings.addFeed') + ' (⌘/Ctrl +)' },
     { key: 'goHome', label: t('shortcutSettings.goHome') },
     { key: 'goStarred', label: t('shortcutSettings.goStarred') },
     { key: 'goFavorites', label: t('shortcutSettings.goFavorites') },
@@ -31,6 +29,29 @@ export default function ShortcutSettings() {
         >
           {t('shortcutSettings.resetDefaults')}
         </button>
+      </div>
+
+      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700/50 p-4">
+        <label className="flex items-center justify-between gap-4 cursor-pointer">
+          <div>
+            <span className="font-medium text-slate-900 dark:text-white">
+              {t('shortcutSettings.enableShortcuts')}
+            </span>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              {t('shortcutSettings.enableShortcutsDesc')}
+            </p>
+          </div>
+          <div className="relative inline-flex items-center">
+            <input
+              type="checkbox"
+              checked={shortcutsEnabled}
+              onChange={(e) => setShortcutsEnabled(e.target.checked)}
+              className="sr-only peer"
+              aria-label={t('shortcutSettings.enableShortcuts')}
+            />
+            <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500/50 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-500"></div>
+          </div>
+        </label>
       </div>
 
       <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700/50 overflow-hidden">

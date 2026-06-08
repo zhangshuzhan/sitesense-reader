@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Article, ArticleScore } from '@/types'
 import { formatRelativeTime } from '@/utils'
@@ -8,6 +8,7 @@ import { useContextMenuStore } from '@/stores/contextMenuStore'
 import { isTauriEnv } from '@/utils/tauri'
 import { useAiTaskUiStore } from '@/stores/aiTaskUiStore'
 import { countTasksByStatus, getDisplayStatus, getAiTaskSummary } from '@/utils/aiTaskStatus'
+import { shouldProxyMediaUrl } from '@/utils/mediaProxy'
 
 const ScoreBadges = ({ scores, className = "" }: { scores?: ArticleScore[], className?: string }) => {
   if (!scores || scores.length === 0) return null
@@ -50,7 +51,8 @@ interface ArticleItemProps {
 
 export default function ArticleItem({ article, isSelected, onSelect, linkTarget }: ArticleItemProps) {
   const { open } = useContextMenuStore()
-  const [imgFailed, setImgFailed] = useState(false)
+  const [useProxyImage, setUseProxyImage] = useState(false)
+  const [hideImage, setHideImage] = useState(false)
   const aiTasks = useAiTaskUiStore((state) => state.tasksByArticleId[article.id] ?? [])
 
   const handleContextMenu = (e: React.MouseEvent) => {
@@ -70,10 +72,16 @@ export default function ArticleItem({ article, isSelected, onSelect, linkTarget 
     firstImage = `https:${firstImage}`
   }
 
-  // Always proxy through rss-media:// in Tauri to bypass referer/hotlink blocking
-  const imageUrl = firstImage && isTauriEnv
+  const shouldUseProxyFallback = Boolean(firstImage && isTauriEnv && shouldProxyMediaUrl(firstImage))
+  const proxiedImageUrl = firstImage && shouldUseProxyFallback
     ? `rss-media://localhost/${encodeURIComponent(firstImage)}`
-    : firstImage
+    : null
+  const imageUrl = useProxyImage && proxiedImageUrl ? proxiedImageUrl : firstImage
+
+  useEffect(() => {
+    setUseProxyImage(false)
+    setHideImage(false)
+  }, [article.id, firstImage])
 
   const taskCounts = countTasksByStatus(aiTasks)
   const { hasFailed, hasProcessing, hasPending, displayText, icon } = getDisplayStatus(taskCounts)
@@ -127,18 +135,17 @@ export default function ArticleItem({ article, isSelected, onSelect, linkTarget 
                 )}
               </div>
 
-              {imageUrl && (
+              {imageUrl && !hideImage && (
                 <div className="flex-shrink-0">
                   <img
-                    src={imgFailed && firstImage ? firstImage : imageUrl}
+                    src={imageUrl}
                     alt=""
                     className="w-24 h-16 object-cover rounded-lg bg-slate-100 dark:bg-slate-700"
-                    onError={(e) => {
-                      if (!imgFailed && firstImage) {
-                        // Proxy failed, try direct URL as fallback
-                        setImgFailed(true)
+                    onError={() => {
+                      if (!useProxyImage && proxiedImageUrl) {
+                        setUseProxyImage(true)
                       } else {
-                        e.currentTarget.style.display = 'none'
+                        setHideImage(true)
                       }
                     }}
                   />

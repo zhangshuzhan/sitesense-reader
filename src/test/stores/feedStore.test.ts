@@ -1,9 +1,18 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useFeedStore } from '@/stores/feedStore'
 import { Feed, Article } from '@/types'
+import { invoke } from '@/utils/tauri'
+
+vi.mock('@/utils/tauri', () => ({
+  invoke: vi.fn(),
+}))
+
+const mockedInvoke = vi.mocked(invoke)
 
 describe('FeedStore', () => {
   beforeEach(() => {
+    mockedInvoke.mockReset()
+    mockedInvoke.mockResolvedValue(null)
     useFeedStore.getState().reset()
   })
 
@@ -135,25 +144,122 @@ describe('FeedStore', () => {
       const { articles } = useFeedStore.getState()
       expect(articles[0].isFavorite).toBe(true)
     })
-  })
 
-  describe('Settings operations', () => {
-    it('should update settings', () => {
-      const { setSettings } = useFeedStore.getState()
-      setSettings({ theme: 'dark' })
-      
-      const { settings } = useFeedStore.getState()
-      expect(settings.theme).toBe('dark')
+    it('should apply read updates idempotently to feed unread counts', () => {
+      const { setFeeds, setArticles, applyArticleUpdate } = useFeedStore.getState()
+      setFeeds([
+        {
+          id: 1,
+          title: 'Test Feed',
+          url: 'https://example.com/feed',
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
+          unreadCount: 1,
+        },
+      ])
+      setArticles([mockArticle])
+
+      applyArticleUpdate({ id: 1, feedId: 1, isRead: true })
+      applyArticleUpdate({ id: 1, feedId: 1, isRead: true })
+
+      const { articles, feeds } = useFeedStore.getState()
+      expect(articles[0].isRead).toBe(true)
+      expect(feeds[0].unreadCount).toBe(0)
     })
 
-    it('should preserve existing settings when updating', () => {
-      const { setSettings } = useFeedStore.getState()
-      setSettings({ autoUpdate: false })
-      setSettings({ theme: 'dark' })
-      
-      const { settings } = useFeedStore.getState()
-      expect(settings.theme).toBe('dark')
-      expect(settings.autoUpdate).toBe(false)
+    it('should not change feed unread counts when article state is unknown', () => {
+      const { setFeeds, applyArticleUpdate } = useFeedStore.getState()
+      setFeeds([
+        {
+          id: 1,
+          title: 'Test Feed',
+          url: 'https://example.com/feed',
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
+          unreadCount: 3,
+        },
+      ])
+
+      applyArticleUpdate({ id: 99, feedId: 1, isRead: true })
+
+      const { feeds } = useFeedStore.getState()
+      expect(feeds[0].unreadCount).toBe(3)
+    })
+
+    it('should update feed unread counts when caller provides previous read state', () => {
+      const { setFeeds, applyArticleUpdate } = useFeedStore.getState()
+      setFeeds([
+        {
+          id: 1,
+          title: 'Test Feed',
+          url: 'https://example.com/feed',
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
+          unreadCount: 1,
+        },
+      ])
+
+      applyArticleUpdate({
+        id: 99,
+        feedId: 1,
+        isRead: true,
+        previousIsRead: false,
+      })
+
+      const { feeds } = useFeedStore.getState()
+      expect(feeds[0].unreadCount).toBe(0)
+    })
+
+    it('should keep public read action in sync with feed counts and current article', async () => {
+      const { setFeeds, setArticles, setCurrentArticle, markArticleRead } = useFeedStore.getState()
+      setFeeds([
+        {
+          id: 1,
+          title: 'Test Feed',
+          url: 'https://example.com/feed',
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
+          unreadCount: 1,
+        },
+      ])
+      setArticles([mockArticle])
+      setCurrentArticle(mockArticle)
+
+      await markArticleRead(1, true)
+
+      const { articles, currentArticle, feeds } = useFeedStore.getState()
+      expect(articles[0].isRead).toBe(true)
+      expect(currentArticle?.isRead).toBe(true)
+      expect(feeds[0].unreadCount).toBe(0)
+    })
+
+    it('should use one IPC call for batch read updates', async () => {
+      const { setFeeds, setArticles, batchMarkRead } = useFeedStore.getState()
+      setFeeds([
+        {
+          id: 1,
+          title: 'Test Feed',
+          url: 'https://example.com/feed',
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
+          unreadCount: 2,
+        },
+      ])
+      setArticles([
+        mockArticle,
+        { ...mockArticle, id: 2, link: 'https://example.com/article-2' },
+      ])
+
+      await batchMarkRead([1, 2], true)
+
+      expect(mockedInvoke).toHaveBeenCalledTimes(1)
+      expect(mockedInvoke).toHaveBeenCalledWith('mark_articles_read', {
+        ids: [1, 2],
+        isRead: true,
+      })
+      const { articles, feeds } = useFeedStore.getState()
+      expect(articles.every((article) => article.isRead)).toBe(true)
+      expect(feeds[0].unreadCount).toBe(0)
     })
   })
 

@@ -54,6 +54,8 @@ interface SettingsStore {
   setArticleListWidth: (width: number) => void
 
   shortcuts: Record<string, string>
+  shortcutsEnabled: boolean
+  setShortcutsEnabled: (enabled: boolean) => void
   setShortcut: (action: string, key: string) => void
   resetShortcuts: () => void
 
@@ -94,12 +96,10 @@ export const defaultShortcuts = {
   toggleStar: 's',
   openOriginal: 'o',
   search: 'k', // cmd+k
-  refresh: 'r',
   settings: ',', // cmd+,
   goHome: 'g',
   goStarred: 'S', // Shift+s to avoid conflict? Or handled by logic
   goFavorites: 'f',
-  addFeed: 'n'
 }
 
 export const useSettingsStore = create<SettingsStore>()(
@@ -119,6 +119,8 @@ export const useSettingsStore = create<SettingsStore>()(
       setArticleListWidth: (width) => set({ articleListWidth: width }),
       
       shortcuts: defaultShortcuts,
+      shortcutsEnabled: true,
+      setShortcutsEnabled: (enabled) => set({ shortcutsEnabled: enabled }),
       setShortcut: (action, key) => set((state) => ({ shortcuts: { ...state.shortcuts, [action]: key } })),
       resetShortcuts: () => set({ shortcuts: defaultShortcuts }),
       
@@ -197,7 +199,7 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'settings-storage',
-      version: 5,
+      version: 6,
       migrate: (persistedState: any, version) => {
         try {
           let state = persistedState || {}
@@ -261,6 +263,13 @@ export const useSettingsStore = create<SettingsStore>()(
             state = {
               ...state,
               language: 'zh'
+            }
+          }
+
+          if (version < 6) {
+            state = {
+              ...state,
+              shortcutsEnabled: true
             }
           }
 

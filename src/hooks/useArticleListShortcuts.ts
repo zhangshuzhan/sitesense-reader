@@ -6,6 +6,7 @@ import { Article } from '@/types'
 import { invoke } from '@/utils/tauri'
 import { toast } from '@/stores/toastStore'
 import { useSettingsStore, defaultShortcuts } from '@/stores/settingsStore'
+import { useFeedStore } from '@/stores/feedStore'
 
 export function useArticleListShortcuts(
   articles: Article[],
@@ -14,9 +15,11 @@ export function useArticleListShortcuts(
 ) {
   const navigate = useNavigate()
   const { articleId } = useParams()
-  const { shortcuts: config = defaultShortcuts } = useSettingsStore()
+  const { shortcuts: config = defaultShortcuts, shortcutsEnabled } = useSettingsStore()
 
   useEffect(() => {
+    if (!shortcutsEnabled) return
+
     const handleKeyDown = async (e: KeyboardEvent) => {
       // Ignore if input/textarea is focused or modifier keys are pressed
       if (
@@ -56,11 +59,14 @@ export function useArticleListShortcuts(
           if (currentId) {
             const article = articles.find(a => a.id === currentId)
             if (article) {
-              await invoke('mark_article_read', { id: currentId, isRead: !article.isRead })
-              // Dispatch event to update UI
-              window.dispatchEvent(new CustomEvent('article-updated', { 
-                detail: { id: currentId, isRead: !article.isRead, feedId: article.feedId } 
-              }))
+              const isRead = !article.isRead
+              await invoke('mark_article_read', { id: currentId, isRead })
+              useFeedStore.getState().applyArticleUpdate({
+                id: currentId,
+                isRead,
+                feedId: article.feedId,
+                previousIsRead: article.isRead,
+              })
               toast.success(article.isRead ? i18n.t('articleActions.markedAsUnread') : i18n.t('articleActions.markedAsRead'))
             }
           }
@@ -70,10 +76,9 @@ export function useArticleListShortcuts(
           if (currentId) {
             const article = articles.find(a => a.id === currentId)
             if (article) {
+              const isStarred = !article.isStarred
               await invoke('toggle_article_star', { id: currentId })
-              window.dispatchEvent(new CustomEvent('article-updated', { 
-                detail: { id: currentId, isStarred: !article.isStarred, feedId: article.feedId } 
-              }))
+              useFeedStore.getState().applyArticleUpdate({ id: currentId, isStarred, feedId: article.feedId })
               toast.success(article.isStarred ? i18n.t('articleActions.starRemoved') : i18n.t('articleActions.starAdded'))
             }
           }
@@ -84,5 +89,5 @@ export function useArticleListShortcuts(
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [articles, articleId, virtuosoRef, navigate, basePath, config])
+  }, [articles, articleId, virtuosoRef, navigate, basePath, config, shortcutsEnabled])
 }

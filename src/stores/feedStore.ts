@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { Feed, Article, Settings, AppState } from '@/types'
+import { Feed, Article, AppState } from '@/types'
 import { invoke } from '@/utils/tauri'
 
 export interface ArticleFilter {
@@ -29,30 +29,92 @@ interface FeedStore extends AppState {
   toggleArticleStar: (id: number) => Promise<boolean>
   toggleArticleFavorite: (id: number) => Promise<boolean>
 
-  setSettings: (settings: Partial<Settings>) => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
 
   sortOrder: string
   setSortOrder: (order: string) => void
+  lastArticleUpdate: ArticleUpdate | null
+  articleUpdateVersion: number
+  applyArticleUpdate: (update: ArticleUpdate) => void
 
   reset: () => void
 }
 
-const initialState: AppState & { sortOrder: string } = {
+export type ArticleUpdate = Partial<Article> & {
+  id: number
+  previousIsRead?: boolean
+}
+
+type FeedStoreState = AppState & {
+  sortOrder: string
+  lastArticleUpdate: ArticleUpdate | null
+  articleUpdateVersion: number
+}
+
+const initialState: FeedStoreState = {
   feeds: [],
   articles: [],
   currentFeed: null,
   currentArticle: null,
-  settings: {
-    theme: 'system',
-    autoUpdate: true,
-    updateInterval: 15,
-    maxArticles: 1000,
-  },
   isLoading: false,
   error: null,
   sortOrder: 'date_desc',
+  lastArticleUpdate: null,
+  articleUpdateVersion: 0,
+}
+
+function updateArticleList(articles: Article[], update: ArticleUpdate) {
+  const articlePatch = toArticlePatch(update)
+  return articles.map((article) =>
+    article.id === update.id ? { ...article, ...articlePatch } : article
+  )
+}
+
+function getReadCountChange(state: AppState, update: ArticleUpdate) {
+  if (typeof update.isRead !== 'boolean') return null
+
+  const existing =
+    state.articles.find((article) => article.id === update.id) ??
+    (state.currentArticle?.id === update.id ? state.currentArticle : null)
+  const previousIsRead =
+    typeof update.previousIsRead === 'boolean' ? update.previousIsRead : existing?.isRead
+
+  if (typeof previousIsRead !== 'boolean' || previousIsRead === update.isRead) return null
+
+  const feedId = typeof update.feedId === 'number' ? update.feedId : existing?.feedId
+  if (typeof feedId !== 'number') return null
+  return {
+    feedId,
+    delta: update.isRead ? -1 : 1,
+  }
+}
+
+function toArticlePatch(update: ArticleUpdate): Partial<Article> & { id: number } {
+  const { previousIsRead: _previousIsRead, ...articlePatch } = update
+  return articlePatch
+}
+
+function applyArticleUpdateState(state: FeedStoreState, update: ArticleUpdate) {
+  const readChange = getReadCountChange(state, update)
+  const articlePatch = toArticlePatch(update)
+
+  return {
+    articles: updateArticleList(state.articles, articlePatch),
+    currentArticle:
+      state.currentArticle?.id === update.id
+        ? { ...state.currentArticle, ...articlePatch }
+        : state.currentArticle,
+    feeds: !readChange
+      ? state.feeds
+      : state.feeds.map((feed) =>
+        feed.id === readChange.feedId
+          ? { ...feed, unreadCount: Math.max(0, (feed.unreadCount || 0) + readChange.delta) }
+          : feed
+      ),
+    lastArticleUpdate: articlePatch,
+    articleUpdateVersion: state.articleUpdateVersion + 1,
+  }
 }
 
 export const useFeedStore = create<FeedStore>((set) => ({
@@ -93,6 +155,7 @@ export const useFeedStore = create<FeedStore>((set) => ({
   })),
   
   setCurrentArticle: (article) => set({ currentArticle: article }),
+  applyArticleUpdate: (update) => set((state) => applyArticleUpdateState(state, update)),
 
   // Unified article actions
   fetchArticles: async (filter, limit = 50, cursor = null) => {
@@ -130,15 +193,7 @@ export const useFeedStore = create<FeedStore>((set) => ({
   markArticleRead: async (id, read) => {
     try {
       await invoke('mark_article_read', { id, isRead: read })
-      set((state) => ({
-        articles: state.articles.map((article) =>
-          article.id === id ? { ...article, isRead: read } : article
-        ),
-      }))
-      // Dispatch event for other components
-      window.dispatchEvent(new CustomEvent('article-updated', {
-        detail: { id, isRead: read }
-      }))
+      set((state) => applyArticleUpdateState(state, { id, isRead: read }))
     } catch (error) {
       console.error('Failed to mark article read:', error)
       throw error
@@ -148,14 +203,7 @@ export const useFeedStore = create<FeedStore>((set) => ({
   markArticleStarred: async (id, starred) => {
     try {
       await invoke('toggle_article_star', { id })
-      set((state) => ({
-        articles: state.articles.map((article) =>
-          article.id === id ? { ...article, isStarred: starred } : article
-        ),
-      }))
-      window.dispatchEvent(new CustomEvent('article-updated', {
-        detail: { id, isStarred: starred }
-      }))
+      set((state) => applyArticleUpdateState(state, { id, isStarred: starred }))
     } catch (error) {
       console.error('Failed to mark article starred:', error)
       throw error
@@ -165,14 +213,7 @@ export const useFeedStore = create<FeedStore>((set) => ({
   markArticleFavorite: async (id, favorite) => {
     try {
       await invoke('toggle_article_favorite', { id })
-      set((state) => ({
-        articles: state.articles.map((article) =>
-          article.id === id ? { ...article, isFavorite: favorite } : article
-        ),
-      }))
-      window.dispatchEvent(new CustomEvent('article-updated', {
-        detail: { id, isFavorite: favorite }
-      }))
+      set((state) => applyArticleUpdateState(state, { id, isFavorite: favorite }))
     } catch (error) {
       console.error('Failed to mark article favorite:', error)
       throw error
@@ -181,18 +222,9 @@ export const useFeedStore = create<FeedStore>((set) => ({
 
   batchMarkRead: async (ids, read = true) => {
     try {
+      await invoke('mark_articles_read', { ids, isRead: read })
       for (const id of ids) {
-        await invoke('mark_article_read', { id, isRead: read })
-      }
-      set((state) => ({
-        articles: state.articles.map((article) =>
-          ids.includes(article.id) ? { ...article, isRead: read } : article
-        ),
-      }))
-      for (const id of ids) {
-        window.dispatchEvent(new CustomEvent('article-updated', {
-          detail: { id, isRead: read }
-        }))
+        set((state) => applyArticleUpdateState(state, { id, isRead: read }))
       }
     } catch (error) {
       console.error('Failed to batch mark read:', error)
@@ -205,14 +237,7 @@ export const useFeedStore = create<FeedStore>((set) => ({
       await invoke('toggle_article_star', { id })
       const article = await invoke<Article | null>('get_article', { id })
       const newState = article?.isStarred ?? false
-      set((state) => ({
-        articles: state.articles.map((a) =>
-          a.id === id ? { ...a, isStarred: newState } : a
-        ),
-      }))
-      window.dispatchEvent(new CustomEvent('article-updated', {
-        detail: { id, isStarred: newState }
-      }))
+      set((state) => applyArticleUpdateState(state, { id, isStarred: newState }))
       return newState
     } catch (error) {
       console.error('Failed to toggle star:', error)
@@ -225,14 +250,7 @@ export const useFeedStore = create<FeedStore>((set) => ({
       await invoke('toggle_article_favorite', { id })
       const article = await invoke<Article | null>('get_article', { id })
       const newState = article?.isFavorite ?? false
-      set((state) => ({
-        articles: state.articles.map((a) =>
-          a.id === id ? { ...a, isFavorite: newState } : a
-        ),
-      }))
-      window.dispatchEvent(new CustomEvent('article-updated', {
-        detail: { id, isFavorite: newState }
-      }))
+      set((state) => applyArticleUpdateState(state, { id, isFavorite: newState }))
       return newState
     } catch (error) {
       console.error('Failed to toggle favorite:', error)
@@ -240,10 +258,6 @@ export const useFeedStore = create<FeedStore>((set) => ({
     }
   },
 
-  setSettings: (settings) => set((state) => ({
-    settings: { ...state.settings, ...settings },
-  })),
-  
   setLoading: (isLoading) => set({ isLoading }),
   
   setError: (error) => set({ error }),

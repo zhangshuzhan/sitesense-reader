@@ -1,5 +1,3 @@
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneLight, vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Check, Copy } from 'lucide-react'
@@ -12,7 +10,6 @@ interface CodeBlockProps {
 export default function CodeBlock({ language, value }: CodeBlockProps) {
   const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
-  const isDark = document.documentElement.classList.contains('dark')
 
   const handleCopy = () => {
     navigator.clipboard.writeText(value)
@@ -32,24 +29,9 @@ export default function CodeBlock({ language, value }: CodeBlockProps) {
           {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
         </button>
       </div>
-      <div className="overflow-x-auto">
-        <SyntaxHighlighter
-          language={language || 'text'}
-          style={isDark ? vscDarkPlus : oneLight}
-          customStyle={{
-            margin: 0,
-            padding: '1.25rem',
-            fontSize: '0.875rem',
-            lineHeight: '1.6',
-            backgroundColor: isDark ? '#1e1e1e' : '#f8fafc',
-            minWidth: 'max-content',
-          }}
-          showLineNumbers
-          wrapLines
-        >
-          {value}
-        </SyntaxHighlighter>
-      </div>
+      <pre className="m-0 min-w-max overflow-x-auto bg-slate-50 p-5 text-sm leading-6 text-slate-700 dark:bg-slate-900 dark:text-slate-200">
+        <code className={language ? `language-${language}` : undefined}>{value}</code>
+      </pre>
     </div>
   )
 }

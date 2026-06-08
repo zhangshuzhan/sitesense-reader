@@ -46,10 +46,15 @@ export default function GeneralSettings() {
   const { addToast } = useToastStore()
   const setFeeds = useFeedStore(state => state.setFeeds)
   const [localRsshubDomain, setLocalRsshubDomain] = useState(rsshubDomain)
+  const [localAutoCleanupDays, setLocalAutoCleanupDays] = useState(String(autoCleanup.maxRetentionDays))
 
   useEffect(() => {
     fetchStorageInfo()
   }, [])
+
+  useEffect(() => {
+    setLocalAutoCleanupDays(String(autoCleanup.maxRetentionDays))
+  }, [autoCleanup.maxRetentionDays])
 
   const fetchStorageInfo = async () => {
     try {
@@ -230,6 +235,7 @@ export default function GeneralSettings() {
                     checked={autoUpdate}
                     onChange={(e) => setAutoUpdate(e.target.checked)}
                     className="sr-only peer"
+                    aria-label={t('generalSettings.autoUpdate')}
                   />
                   <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500/50 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-500"></div>
                 </label>
@@ -245,6 +251,7 @@ export default function GeneralSettings() {
                 value={updateInterval}
                 onChange={(e) => setUpdateInterval(Number(e.target.value))}
                 className="px-3 py-2 bg-slate-100 dark:bg-slate-700 border-0 rounded-lg text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-primary-500/50 cursor-pointer"
+                aria-label={t('generalSettings.updateInterval')}
               >
                 <option value={5}>{t('generalSettings.5min')}</option>
                 <option value={15}>{t('generalSettings.15min')}</option>
@@ -368,6 +375,7 @@ export default function GeneralSettings() {
                     checked={autoCleanup.enabled}
                     onChange={(e) => setAutoCleanup({ enabled: e.target.checked })}
                     className="sr-only peer"
+                    aria-label={t('generalSettings.autoCleanup')}
                   />
                   <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary-500/50 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-500"></div>
                 </label>
@@ -381,9 +389,21 @@ export default function GeneralSettings() {
                       <input
                         type="number"
                         min="1"
-                        value={autoCleanup.maxRetentionDays}
-                        onChange={(e) => setAutoCleanup({ maxRetentionDays: parseInt(e.target.value) || 30 })}
+                        value={localAutoCleanupDays}
+                        onChange={(e) => {
+                          setLocalAutoCleanupDays(e.target.value)
+                          const value = parseInt(e.target.value)
+                          if (Number.isFinite(value) && value >= 1) {
+                            setAutoCleanup({ maxRetentionDays: value })
+                          }
+                        }}
+                        onBlur={() => {
+                          if (!localAutoCleanupDays) {
+                            setLocalAutoCleanupDays(String(autoCleanup.maxRetentionDays))
+                          }
+                        }}
                         className="w-20 px-2 py-1 text-sm bg-slate-100 dark:bg-slate-700 border-0 rounded text-slate-900 dark:text-white focus:ring-1 focus:ring-primary-500"
+                        aria-label={t('generalSettings.retentionDays')}
                       />
                       <span className="text-sm text-slate-500">{t('generalSettings.days')}</span>
                     </div>
@@ -395,6 +415,7 @@ export default function GeneralSettings() {
                       checked={autoCleanup.exceptStarred}
                       onChange={(e) => setAutoCleanup({ exceptStarred: e.target.checked })}
                       className="w-4 h-4 text-primary-500 rounded border-slate-300 focus:ring-primary-500"
+                      aria-label={t('generalSettings.keepStarred')}
                     />
                   </div>
                 </div>

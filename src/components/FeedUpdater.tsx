@@ -2,10 +2,8 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { invoke, isTauriEnv } from '@/utils/tauri'
 import { useFeedStore } from '@/stores/feedStore'
-import { useSettingsStore } from '@/stores/settingsStore'
 import { RefreshCw, Check, AlertCircle } from 'lucide-react'
-import { enqueueAutoSummary } from '@/components/ai/AutoSummaryWorker'
-import { Article } from '@/types'
+import { runFeedRefresh, runAiQueueForeground } from '@/services/runtime'
 
 export default function FeedUpdater() {
   const { t } = useTranslation()
@@ -13,7 +11,6 @@ export default function FeedUpdater() {
   const [newArticlesCount, setNewArticlesCount] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const { setFeeds } = useFeedStore()
-  const { rsshubDomain } = useSettingsStore()
 
   const handleUpdateAll = async () => {
     if (!isTauriEnv || isUpdating) return
@@ -23,18 +20,14 @@ export default function FeedUpdater() {
     setError(null)
 
     try {
-      const newArticles = await invoke<Article[]>('update_all_feeds', { rsshubDomain })
-      setNewArticlesCount(newArticles.length)
-      enqueueAutoSummary(newArticles.map((a) => a.id))
-      window.dispatchEvent(new CustomEvent('ai-work-available'))
+      const { newArticleCount } = await runFeedRefresh()
+      setNewArticlesCount(newArticleCount)
 
       const feeds = await invoke<any[]>('get_feeds')
       setFeeds(feeds)
+      await runAiQueueForeground()
 
-      // Dispatch event to refresh article lists
-      window.dispatchEvent(new CustomEvent('feeds-updated', { detail: { newArticles } }))
-
-      if (newArticles.length > 0) {
+      if (newArticleCount > 0) {
         setTimeout(() => {
           setNewArticlesCount(0)
         }, 3000)

@@ -9,17 +9,54 @@ pub mod tags;
 
 use crate::models::{Article, Feed, NewArticle};
 use articles::{query_articles, row_to_article, ArticleFilter};
-use rusqlite::{Connection, OptionalExtension, Result as SqliteResult, params};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
+use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::State;
+use tokio::task::JoinSet;
 
-type DbState = Mutex<Connection>;
+pub type DbState = Mutex<Connection>;
+const FEED_REFRESH_CONCURRENCY: usize = 4;
+const LEGACY_APP_IDENTIFIER: &str = "com.rss-reader.app";
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NavigationScope {
+    All,
+    Unread,
+    Starred,
+    Favorite,
+    Feed,
+    Tag,
+    Group,
+    Search,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArticleNavigationContext {
+    pub scope: NavigationScope,
+    pub feed_id: Option<i64>,
+    pub tag_id: Option<i64>,
+    pub group_id: Option<i64>,
+    pub query: Option<String>,
+}
+
+impl Default for ArticleNavigationContext {
+    fn default() -> Self {
+        Self {
+            scope: NavigationScope::All,
+            feed_id: None,
+            tag_id: None,
+            group_id: None,
+            query: None,
+        }
+    }
+}
 
 // Re-export all the command functions to maintain backward compatibility
-pub use cache::{
-    clean_all_articles, clean_articles, clean_media_cache, get_storage_info,
-};
+pub use cache::{clean_all_articles, clean_articles, clean_media_cache, get_storage_info};
 pub use feeds::{add_feed, delete_feed, edit_feed, get_feeds};
 pub use groups::{
     add_article_to_group, create_group, delete_group, get_group_articles, get_groups,
@@ -28,22 +65,38 @@ pub use groups::{
 pub use opml::{export_opml, import_opml};
 pub use tags::{add_tag, get_all_tags, get_article_tags, get_articles_by_tag, remove_tag};
 
+pub fn get_legacy_db_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Ok(mut path) = std::env::current_dir() {
+        path.push(".rss-reader-data");
+        path.push("rss.db");
+        paths.push(path);
+    }
+
+    if let Some(mut path) = dirs::data_dir() {
+        path.push(LEGACY_APP_IDENTIFIER);
+        path.push("rss.db");
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+
+    paths
+}
+
 pub fn get_legacy_db_path() -> Option<PathBuf> {
-    let mut path = std::env::current_dir().ok()?;
-    path.push(".rss-reader-data");
-    path.push("rss.db");
-    Some(path)
+    get_legacy_db_paths().into_iter().next()
 }
 
 pub fn init_database_at_path(db_path: &std::path::Path) -> SqliteResult<Connection> {
     let conn = Connection::open(db_path)?;
 
     // Enable foreign key constraints
-    conn.execute("PRAGMA foreign_keys = ON", [])
-        .map_err(|e| {
-            eprintln!("Warning: Failed to enable foreign keys: {}", e);
-            e
-        })?;
+    conn.execute("PRAGMA foreign_keys = ON", []).map_err(|e| {
+        eprintln!("Warning: Failed to enable foreign keys: {}", e);
+        e
+    })?;
 
     // Performance PRAGMAs (use execute_batch — journal_mode returns a result row)
     conn.execute_batch(
@@ -51,7 +104,7 @@ pub fn init_database_at_path(db_path: &std::path::Path) -> SqliteResult<Connecti
          PRAGMA synchronous = NORMAL;
          PRAGMA cache_size = -32000;
          PRAGMA temp_store = MEMORY;
-         PRAGMA mmap_size = 134217728;"
+         PRAGMA mmap_size = 134217728;",
     )?;
 
     conn.execute(
@@ -200,7 +253,6 @@ pub fn init_database_at_path(db_path: &std::path::Path) -> SqliteResult<Connecti
         eprintln!("Warning: Database integrity check failed: {}", integrity);
     }
 
-
     // Clean up orphaned articles (articles without a valid feed)
     let orphaned_count = conn
         .execute(
@@ -300,11 +352,8 @@ pub fn init_database_at_path(db_path: &std::path::Path) -> SqliteResult<Connecti
 #[tauri::command]
 pub fn delete_article(conn: State<DbState>, id: i64) -> Result<(), String> {
     let conn = conn.lock().map_err(|e| e.to_string())?;
-    conn.execute(
-        "DELETE FROM articles WHERE id = ?1",
-        [id],
-    )
-    .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM articles WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -389,14 +438,14 @@ pub fn search_articles(conn: State<DbState>, query: String) -> Result<Vec<Articl
 
 fn search_articles_inner(conn: &Connection, query: String) -> SqliteResult<Vec<Article>> {
     let mut stmt = conn.prepare(
-         "SELECT a.id, a.feed_id, a.title, a.link, a.author, a.content, a.summary, a.published_at,
+        "SELECT a.id, a.feed_id, a.title, a.link, a.author, a.content, a.summary, a.published_at,
                  a.updated_at, a.is_read, a.is_starred, a.is_favorite, a.created_at, a.thumbnail
           FROM articles a
           JOIN articles_fts fts ON a.id = fts.rowid
           WHERE articles_fts MATCH ?1
           ORDER BY rank
-          LIMIT 100"
-     )?;
+          LIMIT 100",
+    )?;
 
     let articles = stmt
         .query_map([&query], row_to_article)?
@@ -416,7 +465,7 @@ fn export_data_impl(conn: &Connection, format: &str) -> Result<String, Box<dyn s
         let mut stmt = conn.prepare(
             "SELECT id, feed_id, title, link, author, content, summary, published_at,
                     updated_at, is_read, is_starred, is_favorite, created_at, thumbnail
-             FROM articles"
+             FROM articles",
         )?;
 
         let articles = stmt
@@ -441,6 +490,41 @@ pub fn mark_article_read(conn: State<DbState>, id: i64, is_read: bool) -> Result
     .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+fn mark_articles_read_inner(
+    conn: &mut Connection,
+    ids: &[i64],
+    is_read: bool,
+) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        let mut stmt = tx
+            .prepare("UPDATE articles SET is_read = ?1 WHERE id = ?2")
+            .map_err(|e| e.to_string())?;
+
+        for id in ids {
+            stmt.execute(params![is_read as i32, id])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn mark_articles_read(
+    conn: State<DbState>,
+    ids: Vec<i64>,
+    is_read: bool,
+) -> Result<(), String> {
+    let mut conn = conn.lock().map_err(|e| e.to_string())?;
+    mark_articles_read_inner(&mut conn, &ids, is_read)
 }
 
 #[tauri::command]
@@ -470,7 +554,11 @@ pub fn toggle_article_favorite(conn: State<DbState>, id: i64) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn update_article_summary(conn: State<DbState>, id: i64, summary: String) -> Result<(), String> {
+pub fn update_article_summary(
+    conn: State<DbState>,
+    id: i64,
+    summary: String,
+) -> Result<(), String> {
     let conn = conn.lock().map_err(|e| e.to_string())?;
 
     conn.execute(
@@ -519,7 +607,10 @@ pub fn get_article(conn: State<DbState>, id: i64) -> Result<Option<Article>, Str
     get_article_inner(&conn, id)
 }
 
-fn get_article_ai_summary_inner(conn: &Connection, article_id: i64) -> Result<Option<String>, String> {
+fn get_article_ai_summary_inner(
+    conn: &Connection,
+    article_id: i64,
+) -> Result<Option<String>, String> {
     conn.query_row(
         "SELECT summary FROM article_ai_summaries WHERE article_id = ?1",
         [article_id],
@@ -568,79 +659,306 @@ pub fn upsert_article_ai_summary(
 pub fn get_article_navigation(
     conn: State<DbState>,
     current_id: i64,
+    context: Option<ArticleNavigationContext>,
 ) -> Result<(Option<Article>, Option<Article>), String> {
     let conn = conn.lock().map_err(|e| e.to_string())?;
+    get_article_navigation_inner(&conn, current_id, context.unwrap_or_default())
+}
 
-    // Get current article info
-    let current_article = {
-        let mut stmt = conn
-            .prepare("SELECT feed_id, published_at FROM articles WHERE id = ?1")
-            .map_err(|e| e.to_string())?;
+fn get_article_navigation_inner(
+    conn: &Connection,
+    current_id: i64,
+    mut context: ArticleNavigationContext,
+) -> Result<(Option<Article>, Option<Article>), String> {
+    let current_article = conn
+        .query_row(
+            "SELECT feed_id, published_at FROM articles WHERE id = ?1",
+            [current_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
 
-        stmt.query_row([current_id], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
-        })
-        .map_err(|e| e.to_string())?
-    };
+    let (current_feed_id, published_at) = current_article;
 
-    let (feed_id, published_at) = current_article;
-
-    // If no published time, return empty navigation
-    if published_at.is_none() {
-        return Ok((None, None));
+    if context.scope == NavigationScope::Feed && context.feed_id.is_none() {
+        context.feed_id = Some(current_feed_id);
     }
 
-    let published_at = published_at.unwrap();
+    if context.scope == NavigationScope::Search {
+        let query = context.query.as_deref().unwrap_or_default().trim();
+        if query.is_empty() {
+            return Ok((None, None));
+        }
+        return get_search_navigation_inner(conn, current_id, query);
+    }
 
-    // Get previous article (same feed, published earlier than current article)
-    let prev_article = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, feed_id, title, link, author, content, summary, published_at,
-                        updated_at, is_read, is_starred, is_favorite, created_at, thumbnail
-                 FROM articles
-                 WHERE feed_id = ?1 AND published_at < ?2
-                 ORDER BY published_at DESC
-                 LIMIT 1"
-            )
-            .map_err(|e| e.to_string())?;
-
-        stmt.query_row((feed_id, published_at.clone()), row_to_article)
-            .map(Some)
-            .or_else(|e| {
-                if e.to_string().contains("no row found") {
-                    Ok(None)
-                } else {
-                    Err(e.to_string())
-                }
-            })?
+    let Some(published_at) = published_at else {
+        return Ok((None, None));
     };
 
-    // Get next article (same feed, published later than current article)
-    let next_article = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, feed_id, title, link, author, content, summary, published_at,
-                        updated_at, is_read, is_starred, is_favorite, created_at, thumbnail
-                 FROM articles
-                 WHERE feed_id = ?1 AND published_at > ?2
-                 ORDER BY published_at ASC
-                 LIMIT 1"
-            )
-            .map_err(|e| e.to_string())?;
-
-        stmt.query_row((feed_id, published_at.clone()), row_to_article)
-            .map(Some)
-            .or_else(|e| {
-                if e.to_string().contains("no row found") {
-                    Ok(None)
-                } else {
-                    Err(e.to_string())
-                }
-            })?
-    };
+    let prev_article = query_navigation_neighbor(conn, current_id, &published_at, &context, true)?;
+    let next_article = query_navigation_neighbor(conn, current_id, &published_at, &context, false)?;
 
     Ok((prev_article, next_article))
+}
+
+fn get_search_navigation_inner(
+    conn: &Connection,
+    current_id: i64,
+    query: &str,
+) -> Result<(Option<Article>, Option<Article>), String> {
+    let articles = search_articles_inner(conn, query.to_string()).map_err(|e| e.to_string())?;
+    let Some(current_index) = articles.iter().position(|article| article.id == current_id) else {
+        return Ok((None, None));
+    };
+
+    let prev_article = articles.get(current_index + 1).cloned();
+    let next_article = current_index
+        .checked_sub(1)
+        .and_then(|index| articles.get(index).cloned());
+
+    Ok((prev_article, next_article))
+}
+
+fn query_navigation_neighbor(
+    conn: &Connection,
+    current_id: i64,
+    published_at: &str,
+    context: &ArticleNavigationContext,
+    previous: bool,
+) -> Result<Option<Article>, String> {
+    let mut sql = String::from(
+        "SELECT a.id, a.feed_id, a.title, a.link, a.author, a.content, a.summary, a.published_at,
+                a.updated_at, a.is_read, a.is_starred, a.is_favorite, a.created_at, a.thumbnail
+         FROM articles a",
+    );
+    let mut where_clauses: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    match context.scope {
+        NavigationScope::All => {}
+        NavigationScope::Unread => where_clauses.push("a.is_read = 0".to_string()),
+        NavigationScope::Starred => where_clauses.push("a.is_starred = 1".to_string()),
+        NavigationScope::Favorite => where_clauses.push("a.is_favorite = 1".to_string()),
+        NavigationScope::Feed => {
+            let feed_id = context
+                .feed_id
+                .ok_or_else(|| "feed scope requires feedId".to_string())?;
+            where_clauses.push("a.feed_id = ?".to_string());
+            params.push(Box::new(feed_id));
+        }
+        NavigationScope::Tag => {
+            let tag_id = context
+                .tag_id
+                .ok_or_else(|| "tag scope requires tagId".to_string())?;
+            sql.push_str(" JOIN article_tags at ON a.id = at.article_id");
+            where_clauses.push("at.tag_id = ?".to_string());
+            params.push(Box::new(tag_id));
+        }
+        NavigationScope::Group => {
+            let group_id = context
+                .group_id
+                .ok_or_else(|| "group scope requires groupId".to_string())?;
+            sql.push_str(" JOIN article_groups ag ON a.id = ag.article_id");
+            where_clauses.push("ag.group_id = ?".to_string());
+            params.push(Box::new(group_id));
+        }
+        NavigationScope::Search => unreachable!("search handled separately"),
+    }
+
+    if previous {
+        where_clauses.push("(a.published_at < ? OR (a.published_at = ? AND a.id < ?))".to_string());
+    } else {
+        where_clauses.push("(a.published_at > ? OR (a.published_at = ? AND a.id > ?))".to_string());
+    }
+    params.push(Box::new(published_at.to_string()));
+    params.push(Box::new(published_at.to_string()));
+    params.push(Box::new(current_id));
+
+    let order_sql = if previous {
+        "ORDER BY a.published_at DESC, a.id DESC"
+    } else {
+        "ORDER BY a.published_at ASC, a.id ASC"
+    };
+
+    let sql = format!(
+        "{} WHERE {} {} LIMIT 1",
+        sql,
+        where_clauses.join(" AND "),
+        order_sql
+    );
+    let params_refs: Vec<&dyn rusqlite::ToSql> =
+        params.iter().map(|param| param.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+
+    stmt.query_row(&*params_refs, row_to_article)
+        .map(Some)
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            _ => Err(error.to_string()),
+        })
+}
+
+#[derive(Debug, Clone)]
+struct FeedRefreshJob {
+    id: i64,
+    url: String,
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FeedUpdateOutcome {
+    pub new_articles: Vec<Article>,
+    pub updated_article_ids: Vec<i64>,
+    pub feed_changed: bool,
+}
+
+impl FeedUpdateOutcome {
+    pub fn has_ui_changes(&self) -> bool {
+        !self.new_articles.is_empty() || !self.updated_article_ids.is_empty() || self.feed_changed
+    }
+
+    fn merge(&mut self, other: FeedUpdateOutcome) {
+        self.new_articles.extend(other.new_articles);
+        self.updated_article_ids.extend(other.updated_article_ids);
+        self.feed_changed |= other.feed_changed;
+    }
+}
+
+fn apply_feed_update_result(
+    conn: &Connection,
+    feed_id: i64,
+    fetch_result: crate::feed::FeedFetchResult,
+) -> Result<FeedUpdateOutcome, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+
+    if fetch_result.not_modified {
+        let had_error = conn
+            .query_row(
+                "SELECT error_message FROM feeds WHERE id = ?1",
+                [feed_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .is_some();
+
+        conn.execute(
+            "UPDATE feeds
+             SET last_updated = ?1, updated_at = ?2, etag = ?3, last_modified = ?4, error_message = NULL
+             WHERE id = ?5",
+            params![
+                now,
+                now,
+                fetch_result.etag,
+                fetch_result.last_modified,
+                feed_id
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(FeedUpdateOutcome {
+            feed_changed: had_error,
+            ..Default::default()
+        });
+    }
+
+    let new_feed = fetch_result
+        .feed
+        .ok_or_else(|| "Missing feed payload for successful refresh".to_string())?;
+
+    let previous_feed = conn
+        .query_row(
+            "SELECT title, description, link, category, icon, error_message FROM feeds WHERE id = ?1",
+            [feed_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let feed_changed = previous_feed
+        .map(
+            |(title, description, link, category, icon, error_message)| {
+                title != new_feed.title
+                    || description != new_feed.description
+                    || link != new_feed.link
+                    || category != new_feed.category
+                    || icon != new_feed.icon
+                    || error_message.is_some()
+            },
+        )
+        .unwrap_or(true);
+
+    conn.execute(
+        "UPDATE feeds
+         SET title = ?1, description = ?2, link = ?3, category = ?4, icon = ?5,
+             last_updated = ?6, updated_at = ?7, etag = ?8, last_modified = ?9, error_message = NULL
+         WHERE id = ?10",
+        params![
+            new_feed.title,
+            new_feed.description,
+            new_feed.link,
+            new_feed.category,
+            new_feed.icon,
+            now,
+            now,
+            fetch_result.etag,
+            fetch_result.last_modified,
+            feed_id
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut outcome = FeedUpdateOutcome {
+        feed_changed,
+        ..Default::default()
+    };
+
+    for item in fetch_result.articles {
+        let created_at = chrono::Utc::now().to_rfc3339();
+        match upsert_article_from_feed_item(conn, feed_id, &item, &created_at) {
+            Ok((article, is_new, is_updated)) => {
+                let context = rules_engine::RuleTriggerContext {
+                    is_existing_article: !is_new,
+                    is_new_article: is_new,
+                    allow_include_fetched: false,
+                };
+
+                if let Err(error) =
+                    rules_engine::process_article_rules_with_context(conn, &article, context)
+                {
+                    eprintln!(
+                        "Warning: Failed to process rules for article {}: {}",
+                        article.id, error
+                    );
+                }
+
+                if is_new {
+                    outcome.new_articles.push(article);
+                } else if is_updated {
+                    outcome.updated_article_ids.push(article.id);
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "Warning: Failed to upsert article {} in feed {}: {}",
+                    item.link, feed_id, error
+                );
+            }
+        }
+    }
+
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -651,7 +969,18 @@ pub async fn fetch_and_add_feed(
     rsshub_domain: Option<String>,
 ) -> Result<(Feed, Vec<Article>), String> {
     let fetcher = crate::feed::FeedFetcher::new()?;
-    let (new_feed, new_articles) = fetcher.fetch_feed(&url, rsshub_domain).await?;
+    let fetch_result = fetcher
+        .fetch_feed(
+            &url,
+            crate::feed::FeedRequestOptions {
+                rsshub_domain,
+                ..Default::default()
+            },
+        )
+        .await?;
+    let new_feed = fetch_result
+        .feed
+        .ok_or_else(|| "Missing feed payload for successful fetch".to_string())?;
 
     let conn = conn.lock().map_err(|e| e.to_string())?;
 
@@ -661,8 +990,8 @@ pub async fn fetch_and_add_feed(
     let final_category = category.or(new_feed.category);
 
     conn.execute(
-        "INSERT INTO feeds (title, url, description, link, category, icon, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO feeds (title, url, description, link, category, icon, etag, last_modified, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             &new_feed.title,
             &new_feed.url,
@@ -670,6 +999,8 @@ pub async fn fetch_and_add_feed(
             &new_feed.link,
             &final_category,
             &new_feed.icon,
+            &fetch_result.etag,
+            &fetch_result.last_modified,
             &now,
             &now
         ],
@@ -680,7 +1011,7 @@ pub async fn fetch_and_add_feed(
 
     let mut articles = Vec::new();
 
-    for item in new_articles {
+    for item in fetch_result.articles {
         let created_at = chrono::Utc::now().to_rfc3339();
         let (article, is_new, _is_updated) =
             upsert_article_from_feed_item(&conn, feed_id, &item, &created_at)?;
@@ -692,7 +1023,10 @@ pub async fn fetch_and_add_feed(
         };
 
         if let Err(e) = rules_engine::process_article_rules_with_context(&conn, &article, context) {
-            eprintln!("Warning: Failed to process rules for article {}: {}", article.id, e);
+            eprintln!(
+                "Warning: Failed to process rules for article {}: {}",
+                article.id, e
+            );
         }
 
         if is_new {
@@ -709,8 +1043,8 @@ pub async fn fetch_and_add_feed(
         category: final_category,
         icon: new_feed.icon,
         last_updated: Some(now.clone()),
-        etag: None,
-        last_modified: None,
+        etag: fetch_result.etag,
+        last_modified: fetch_result.last_modified,
         error_message: None,
         created_at: now.clone(),
         updated_at: now,
@@ -726,72 +1060,48 @@ pub async fn update_feed(
     feed_id: i64,
     rsshub_domain: Option<String>,
 ) -> Result<Vec<Article>, String> {
+    let outcome = update_feed_with_outcome(conn, feed_id, rsshub_domain).await?;
+    Ok(outcome.new_articles)
+}
+
+pub async fn update_feed_with_outcome(
+    conn: State<'_, DbState>,
+    feed_id: i64,
+    rsshub_domain: Option<String>,
+) -> Result<FeedUpdateOutcome, String> {
     let fetcher = crate::feed::FeedFetcher::new()?;
 
-    let url: String = {
+    let job: FeedRefreshJob = {
         let conn_clone = conn.lock().map_err(|e| e.to_string())?;
         conn_clone
             .query_row(
-                "SELECT url FROM feeds WHERE id = ?1",
+                "SELECT id, url, etag, last_modified FROM feeds WHERE id = ?1",
                 [feed_id],
-                |row| row.get(0),
+                |row| {
+                    Ok(FeedRefreshJob {
+                        id: row.get(0)?,
+                        url: row.get(1)?,
+                        etag: row.get(2)?,
+                        last_modified: row.get(3)?,
+                    })
+                },
             )
             .map_err(|e| e.to_string())?
     };
 
-    let (new_feed, new_articles) = fetcher.fetch_feed(&url, rsshub_domain).await?;
+    let fetch_result = fetcher
+        .fetch_feed(
+            &job.url,
+            crate::feed::FeedRequestOptions {
+                rsshub_domain,
+                etag: job.etag,
+                last_modified: job.last_modified,
+            },
+        )
+        .await?;
 
     let conn = conn.lock().map_err(|e| e.to_string())?;
-
-    let now = chrono::Utc::now().to_rfc3339();
-
-    conn.execute(
-        "UPDATE feeds SET title = ?1, description = ?2, link = ?3, category = ?4, icon = ?5, last_updated = ?6, updated_at = ?7, error_message = NULL WHERE id = ?8",
-        params![
-            new_feed.title,
-            new_feed.description,
-            new_feed.link,
-            new_feed.category,
-            new_feed.icon,
-            now,
-            now,
-            feed_id
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-
-    let mut articles = Vec::new();
-
-    for item in new_articles {
-        let created_at = chrono::Utc::now().to_rfc3339();
-        match upsert_article_from_feed_item(&conn, feed_id, &item, &created_at) {
-            Ok((article, is_new, _is_updated)) => {
-                let context = rules_engine::RuleTriggerContext {
-                    is_existing_article: !is_new,
-                    is_new_article: is_new,
-                    allow_include_fetched: false,
-                };
-
-                if let Err(e) =
-                    rules_engine::process_article_rules_with_context(&conn, &article, context)
-                {
-                    eprintln!("Warning: Failed to process rules for article {}: {}", article.id, e);
-                }
-
-                if is_new {
-                    articles.push(article);
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "Warning: Failed to upsert article {} in feed {}: {}",
-                    item.link, feed_id, e
-                );
-            }
-        }
-    }
-
-    Ok(articles)
+    apply_feed_update_result(&conn, feed_id, fetch_result)
 }
 
 #[tauri::command]
@@ -799,37 +1109,80 @@ pub async fn update_all_feeds(
     conn: State<'_, DbState>,
     rsshub_domain: Option<String>,
 ) -> Result<Vec<Article>, String> {
-    let feed_ids: Vec<i64> = {
+    let outcome = update_all_feeds_with_outcome(conn, rsshub_domain).await?;
+    Ok(outcome.new_articles)
+}
+
+pub async fn update_all_feeds_with_outcome(
+    conn: State<'_, DbState>,
+    rsshub_domain: Option<String>,
+) -> Result<FeedUpdateOutcome, String> {
+    let jobs: Vec<FeedRefreshJob> = {
         let conn_clone = conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn_clone
-            .prepare("SELECT id FROM feeds")
+            .prepare("SELECT id, url, etag, last_modified FROM feeds")
             .map_err(|e| e.to_string())?;
-        let ids = stmt
-            .query_map([], |row| row.get(0))
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(FeedRefreshJob {
+                    id: row.get(0)?,
+                    url: row.get(1)?,
+                    etag: row.get(2)?,
+                    last_modified: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
-        ids
     };
 
-    let mut all_new_articles = Vec::new();
+    let fetcher = crate::feed::FeedFetcher::new()?;
+    let mut outcome = FeedUpdateOutcome::default();
 
-    for feed_id in feed_ids {
-        match update_feed(conn.clone(), feed_id, rsshub_domain.clone()).await {
-            Ok(articles) => all_new_articles.extend(articles),
-            Err(e) => {
-                let conn_lock = conn.lock().map_err(|e| e.to_string())?;
-                conn_lock
-                    .execute(
-                        "UPDATE feeds SET error_message = ?1 WHERE id = ?2",
-                        params![e, feed_id],
+    for chunk in jobs.chunks(FEED_REFRESH_CONCURRENCY) {
+        let mut join_set = JoinSet::new();
+
+        for job in chunk.iter().cloned() {
+            let fetcher = fetcher.clone();
+            let rsshub_domain = rsshub_domain.clone();
+            join_set.spawn(async move {
+                let result = fetcher
+                    .fetch_feed(
+                        &job.url,
+                        crate::feed::FeedRequestOptions {
+                            rsshub_domain,
+                            etag: job.etag.clone(),
+                            last_modified: job.last_modified.clone(),
+                        },
                     )
-                    .ok();
+                    .await;
+                (job.id, result)
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            let (feed_id, fetch_result) = result.map_err(|e| e.to_string())?;
+            match fetch_result {
+                Ok(fetch_result) => {
+                    let conn_lock = conn.lock().map_err(|e| e.to_string())?;
+                    let feed_outcome = apply_feed_update_result(&conn_lock, feed_id, fetch_result)?;
+                    outcome.merge(feed_outcome);
+                }
+                Err(error) => {
+                    let conn_lock = conn.lock().map_err(|e| e.to_string())?;
+                    conn_lock
+                        .execute(
+                            "UPDATE feeds SET error_message = ?1 WHERE id = ?2",
+                            params![error, feed_id],
+                        )
+                        .ok();
+                }
             }
         }
     }
 
-    Ok(all_new_articles)
+    Ok(outcome)
 }
 
 fn upsert_article_from_feed_item(
@@ -943,6 +1296,63 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
 
+    #[test]
+    fn legacy_db_paths_include_old_locations() {
+        let paths = get_legacy_db_paths();
+        let cwd_legacy = PathBuf::from(".rss-reader-data").join("rss.db");
+
+        assert!(paths.iter().any(|path| path.ends_with(&cwd_legacy)));
+
+        if let Some(mut old_app_path) = dirs::data_dir() {
+            old_app_path.push(LEGACY_APP_IDENTIFIER);
+            old_app_path.push("rss.db");
+            assert!(paths.contains(&old_app_path));
+        }
+    }
+
+    #[test]
+    fn init_database_resets_interrupted_ai_tasks() {
+        let db_path =
+            std::env::temp_dir().join(format!("rss-reader-init-reset-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute(
+                "CREATE TABLE ai_tasks (
+                    id TEXT PRIMARY KEY,
+                    article_id INTEGER NOT NULL,
+                    rule_id TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    error_msg TEXT
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ai_tasks (id, article_id, rule_id, status, error_msg)
+                 VALUES ('task-1', 1, 'rule-1', 'processing', 'interrupted')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let conn = init_database_at_path(&db_path).unwrap();
+        let (status, error_msg): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, error_msg FROM ai_tasks WHERE id = 'task-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(status, "pending");
+        assert_eq!(error_msg, None);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
     fn setup_test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
 
@@ -961,6 +1371,7 @@ mod tests {
                 etag TEXT,
                 last_modified TEXT,
                 error_message TEXT,
+                icon TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )",
@@ -1014,7 +1425,123 @@ mod tests {
         )
         .unwrap();
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                is_active INTEGER DEFAULT 1,
+                conditions TEXT NOT NULL,
+                actions TEXT NOT NULL,
+                sort_order INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )
+        .unwrap();
+
         conn
+    }
+
+    #[test]
+    fn apply_feed_update_result_handles_not_modified_without_articles() {
+        let conn = setup_test_db();
+
+        conn.execute(
+            "INSERT INTO feeds (title, url, etag, last_modified, error_message)
+             VALUES ('Cached Feed', 'https://example.com/feed.xml', 'old-etag', 'old-date', 'stale error')",
+            [],
+        )
+        .unwrap();
+        let feed_id = conn.last_insert_rowid();
+
+        let outcome = apply_feed_update_result(
+            &conn,
+            feed_id,
+            crate::feed::FeedFetchResult {
+                feed: None,
+                articles: Vec::new(),
+                etag: Some("\"new-etag\"".to_string()),
+                last_modified: Some("Wed, 21 Oct 2015 07:28:00 GMT".to_string()),
+                not_modified: true,
+            },
+        )
+        .unwrap();
+
+        let article_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM articles", [], |row| row.get(0))
+            .unwrap();
+        let (etag, last_modified, error_message): (Option<String>, Option<String>, Option<String>) =
+            conn.query_row(
+                "SELECT etag, last_modified, error_message FROM feeds WHERE id = ?1",
+                [feed_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+
+        assert!(outcome.new_articles.is_empty());
+        assert!(outcome.updated_article_ids.is_empty());
+        assert_eq!(article_count, 0);
+        assert_eq!(etag.as_deref(), Some("\"new-etag\""));
+        assert_eq!(
+            last_modified.as_deref(),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT")
+        );
+        assert!(error_message.is_none());
+    }
+
+    #[test]
+    fn apply_feed_update_result_reports_updated_existing_articles() {
+        let conn = setup_test_db();
+
+        conn.execute(
+            "INSERT INTO feeds (title, url, description, link)
+             VALUES ('Old Feed', 'https://example.com/feed.xml', 'Old description', 'https://example.com')",
+            [],
+        )
+        .unwrap();
+        let feed_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO articles (feed_id, title, link, summary, content, created_at)
+             VALUES (?1, 'Old title', 'https://example.com/article', 'Old summary', 'Old content', '2020-01-01T00:00:00Z')",
+            [feed_id],
+        )
+        .unwrap();
+        let article_id = conn.last_insert_rowid();
+
+        let outcome = apply_feed_update_result(
+            &conn,
+            feed_id,
+            crate::feed::FeedFetchResult {
+                feed: Some(crate::models::NewFeed {
+                    title: "New Feed".to_string(),
+                    url: "https://example.com/feed.xml".to_string(),
+                    description: Some("New description".to_string()),
+                    link: Some("https://example.com".to_string()),
+                    category: None,
+                    icon: None,
+                }),
+                articles: vec![NewArticle {
+                    feed_id,
+                    title: "New title".to_string(),
+                    link: "https://example.com/article".to_string(),
+                    summary: Some("New summary".to_string()),
+                    content: Some("New content".to_string()),
+                    author: None,
+                    published_at: None,
+                    updated_at: Some("2026-01-01T00:00:00Z".to_string()),
+                    thumbnail: None,
+                }],
+                etag: None,
+                last_modified: None,
+                not_modified: false,
+            },
+        )
+        .unwrap();
+
+        assert!(outcome.new_articles.is_empty());
+        assert_eq!(outcome.updated_article_ids, vec![article_id]);
+        assert!(outcome.feed_changed);
+        assert!(outcome.has_ui_changes());
     }
 
     #[test]
@@ -1175,6 +1702,144 @@ mod tests {
         assert_eq!(
             get_article_ai_summary_inner(&conn, article_id).unwrap(),
             Some("S2".to_string())
+        );
+    }
+
+    #[test]
+    fn navigation_respects_unread_scope() {
+        let conn = setup_test_db();
+
+        conn.execute("INSERT INTO feeds (title, url) VALUES ('F1', 'U1')", [])
+            .unwrap();
+        let feed_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO articles (feed_id, title, link, published_at, is_read) VALUES (?1, 'Read newer', 'L1', '2026-01-03T00:00:00Z', 1)",
+            [feed_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO articles (feed_id, title, link, published_at, is_read) VALUES (?1, 'Unread current', 'L2', '2026-01-02T00:00:00Z', 0)",
+            [feed_id],
+        )
+        .unwrap();
+        let current_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO articles (feed_id, title, link, published_at, is_read) VALUES (?1, 'Unread older', 'L3', '2026-01-01T00:00:00Z', 0)",
+            [feed_id],
+        )
+        .unwrap();
+
+        let (prev_article, next_article) = get_article_navigation_inner(
+            &conn,
+            current_id,
+            ArticleNavigationContext {
+                scope: NavigationScope::Unread,
+                feed_id: None,
+                tag_id: None,
+                group_id: None,
+                query: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            prev_article.map(|article| article.title),
+            Some("Unread older".to_string())
+        );
+        assert_eq!(next_article.map(|article| article.title), None);
+    }
+
+    #[test]
+    fn navigation_respects_feed_scope() {
+        let conn = setup_test_db();
+
+        conn.execute("INSERT INTO feeds (title, url) VALUES ('F1', 'U1')", [])
+            .unwrap();
+        let feed_id_1 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO feeds (title, url) VALUES ('F2', 'U2')", [])
+            .unwrap();
+        let feed_id_2 = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO articles (feed_id, title, link, published_at) VALUES (?1, 'Other feed newer', 'L1', '2026-01-03T00:00:00Z')",
+            [feed_id_2],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO articles (feed_id, title, link, published_at) VALUES (?1, 'Current', 'L2', '2026-01-02T00:00:00Z')",
+            [feed_id_1],
+        )
+        .unwrap();
+        let current_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO articles (feed_id, title, link, published_at) VALUES (?1, 'Same feed older', 'L3', '2026-01-01T00:00:00Z')",
+            [feed_id_1],
+        )
+        .unwrap();
+
+        let (prev_article, next_article) = get_article_navigation_inner(
+            &conn,
+            current_id,
+            ArticleNavigationContext {
+                scope: NavigationScope::Feed,
+                feed_id: Some(feed_id_1),
+                tag_id: None,
+                group_id: None,
+                query: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            prev_article.map(|article| article.title),
+            Some("Same feed older".to_string())
+        );
+        assert_eq!(next_article.map(|article| article.title), None);
+    }
+
+    #[test]
+    fn navigation_respects_search_scope() {
+        let conn = setup_test_db();
+
+        conn.execute("INSERT INTO feeds (title, url) VALUES ('F1', 'U1')", [])
+            .unwrap();
+        let feed_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO articles (feed_id, title, link, content, published_at) VALUES (?1, 'Rust latest', 'L1', 'rust rust rust async guide', '2026-01-03T00:00:00Z')",
+            [feed_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO articles (feed_id, title, link, content, published_at) VALUES (?1, 'Rust middle', 'L2', 'rust borrow checker', '2026-01-02T00:00:00Z')",
+            [feed_id],
+        )
+        .unwrap();
+        let current_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO articles (feed_id, title, link, content, published_at) VALUES (?1, 'Python only', 'L3', 'python asyncio', '2026-01-01T00:00:00Z')",
+            [feed_id],
+        )
+        .unwrap();
+
+        let (prev_article, next_article) = get_article_navigation_inner(
+            &conn,
+            current_id,
+            ArticleNavigationContext {
+                scope: NavigationScope::Search,
+                feed_id: None,
+                tag_id: None,
+                group_id: None,
+                query: Some("rust".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(prev_article.map(|article| article.title), None);
+        assert_eq!(
+            next_article.map(|article| article.title),
+            Some("Rust latest".to_string())
         );
     }
 }

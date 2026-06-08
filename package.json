@@ -1,6 +1,6 @@
 {
   "name": "rss-reader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A local, registration-free RSS reader",
   "type": "module",
   "scripts": {
@@ -34,7 +34,6 @@
     "react-dom": "^18.2.0",
     "react-i18next": "^16.5.4",
     "react-router-dom": "^6.20.0",
-    "react-syntax-highlighter": "^16.1.0",
     "react-virtuoso": "^4.18.1",
     "zustand": "^4.4.7"
   },
@@ -47,7 +46,6 @@
     "@types/node": "^25.2.3",
     "@types/react": "^18.2.42",
     "@types/react-dom": "^18.2.17",
-    "@types/react-syntax-highlighter": "^15.5.13",
     "@typescript-eslint/eslint-plugin": "^8.56.0",
     "@typescript-eslint/parser": "^8.56.0",
     "@vitejs/plugin-react": "^4.2.1",

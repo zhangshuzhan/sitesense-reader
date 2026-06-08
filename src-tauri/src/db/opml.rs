@@ -34,13 +34,15 @@ pub fn export_opml(conn: State<DbState>) -> Result<String, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
 
-    let mut opml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+    let mut opml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <opml version="2.0">
   <head>
     <title>RSS Reader Subscriptions</title>
   </head>
   <body>
-"#);
+"#,
+    );
 
     for feed in feeds {
         let description = feed.description.as_deref().unwrap_or("");
@@ -55,29 +57,52 @@ pub fn export_opml(conn: State<DbState>) -> Result<String, String> {
         ));
     }
 
-    opml.push_str(r#"  </body>
-</opml>"#);
+    opml.push_str(
+        r#"  </body>
+</opml>"#,
+    );
 
     Ok(opml)
 }
 
 #[tauri::command]
-pub async fn import_opml(conn: State<'_, DbState>, opml_content: String, rsshub_domain: Option<String>) -> Result<i32, String> {
+pub async fn import_opml(
+    conn: State<'_, DbState>,
+    opml_content: String,
+    rsshub_domain: Option<String>,
+) -> Result<i32, String> {
     let feeds = parse_opml(&opml_content)?;
     let mut imported_count = 0;
 
     for feed_url in feeds {
         let fetcher = crate::feed::FeedFetcher::new()?;
 
-        match fetcher.fetch_feed(&feed_url, rsshub_domain.clone()).await {
-            Ok((new_feed, _articles)) => {
+        match fetcher
+            .fetch_feed(
+                &feed_url,
+                crate::feed::FeedRequestOptions {
+                    rsshub_domain: rsshub_domain.clone(),
+                    etag: None,
+                    last_modified: None,
+                },
+            )
+            .await
+        {
+            Ok(fetch_result) => {
+                if fetch_result.not_modified {
+                    continue;
+                }
+
+                let Some(new_feed) = fetch_result.feed else {
+                    continue;
+                };
                 let conn_lock = conn.lock().map_err(|e| e.to_string())?;
 
                 let now = chrono::Utc::now().to_rfc3339();
 
                 let result = conn_lock.execute(
-                    "INSERT INTO feeds (url, title, description, link, category, icon, last_updated, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    "INSERT INTO feeds (url, title, description, link, category, icon, last_updated, created_at, updated_at, etag, last_modified)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                     params![
                         feed_url,
                         new_feed.title,
@@ -87,7 +112,9 @@ pub async fn import_opml(conn: State<'_, DbState>, opml_content: String, rsshub_
                         new_feed.icon,
                         now,
                         now,
-                        now
+                        now,
+                        fetch_result.etag,
+                        fetch_result.last_modified
                     ],
                 );
 

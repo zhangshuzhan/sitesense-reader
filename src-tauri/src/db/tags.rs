@@ -1,5 +1,5 @@
+use crate::db::articles::{attach_scores_to_articles, row_to_article};
 use crate::models::{Article, Tag};
-use crate::db::articles::{row_to_article, attach_scores_to_articles};
 use rusqlite::Connection;
 use std::sync::Mutex;
 use tauri::State;
@@ -10,21 +10,20 @@ type DbState = Mutex<Connection>;
 pub fn add_tag(conn: State<DbState>, article_id: i64, tag_name: String) -> Result<Tag, String> {
     let conn = conn.lock().map_err(|e| e.to_string())?;
 
-    conn.execute(
-        "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
-        [&tag_name],
-    ).map_err(|e| e.to_string())?;
+    conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?1)", [&tag_name])
+        .map_err(|e| e.to_string())?;
 
-    let tag_id: i64 = conn.query_row(
-        "SELECT id FROM tags WHERE name = ?1",
-        [&tag_name],
-        |row| row.get(0),
-    ).map_err(|e| e.to_string())?;
+    let tag_id: i64 = conn
+        .query_row("SELECT id FROM tags WHERE name = ?1", [&tag_name], |row| {
+            row.get(0)
+        })
+        .map_err(|e| e.to_string())?;
 
     conn.execute(
         "INSERT OR IGNORE INTO article_tags (article_id, tag_id) VALUES (?1, ?2)",
         [article_id, tag_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(Tag {
         id: tag_id,
@@ -39,29 +38,34 @@ pub fn remove_tag(conn: State<DbState>, article_id: i64, tag_id: i64) -> Result<
     conn.execute(
         "DELETE FROM article_tags WHERE article_id = ?1 AND tag_id = ?2",
         [article_id, tag_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn get_article_tags(conn: State<DbState>, article_id: i64) -> Result<Vec<Tag>, String> {
     let conn = conn.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT t.id, t.name, t.created_at
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id, t.name, t.created_at
          FROM tags t
          JOIN article_tags at ON t.id = at.tag_id
-         WHERE at.article_id = ?1"
-    ).map_err(|e| e.to_string())?;
+         WHERE at.article_id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let tags = stmt.query_map([article_id], |row| {
-        Ok(Tag {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            created_at: row.get(2)?,
+    let tags = stmt
+        .query_map([article_id], |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at: row.get(2)?,
+            })
         })
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     Ok(tags)
 }
@@ -88,12 +92,12 @@ pub fn get_articles_by_tag(
 
     if let Some(c) = cursor {
         if let Some((ts, id_str)) = c.split_once('|') {
-             if let Ok(id) = id_str.parse::<i64>() {
-                 where_clauses.push("(a.published_at < ? OR (a.published_at = ? AND a.id < ?))");
-                 params.push(Box::new(ts.to_string()));
-                 params.push(Box::new(ts.to_string()));
-                 params.push(Box::new(id));
-             }
+            if let Ok(id) = id_str.parse::<i64>() {
+                where_clauses.push("(a.published_at < ? OR (a.published_at = ? AND a.id < ?))");
+                params.push(Box::new(ts.to_string()));
+                params.push(Box::new(ts.to_string()));
+                params.push(Box::new(id));
+            }
         }
     }
 
@@ -103,14 +107,18 @@ pub fn get_articles_by_tag(
         format!("AND {}", where_clauses.join(" AND "))
     };
 
-    let sql = format!("{} {} ORDER BY a.published_at DESC, a.id DESC LIMIT ?", sql_base, where_sql);
+    let sql = format!(
+        "{} {} ORDER BY a.published_at DESC, a.id DESC LIMIT ?",
+        sql_base, where_sql
+    );
     params.push(Box::new(limit));
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
     let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
-    let mut articles = stmt.query_map(&*params_refs, row_to_article)
+    let mut articles = stmt
+        .query_map(&*params_refs, row_to_article)
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
@@ -122,15 +130,19 @@ pub fn get_articles_by_tag(
 #[tauri::command]
 pub fn get_all_tags(conn: State<DbState>) -> Result<Vec<Tag>, String> {
     let conn = conn.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, name, created_at FROM tags ORDER BY name").map_err(|e| e.to_string())?;
-    let tags = stmt.query_map([], |row| {
-        Ok(Tag {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            created_at: row.get(2)?,
+    let mut stmt = conn
+        .prepare("SELECT id, name, created_at FROM tags ORDER BY name")
+        .map_err(|e| e.to_string())?;
+    let tags = stmt
+        .query_map([], |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at: row.get(2)?,
+            })
         })
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
     Ok(tags)
 }

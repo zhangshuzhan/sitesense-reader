@@ -1,24 +1,27 @@
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import parse, { DOMNode, Element, domToReact, HTMLReactParserOptions } from 'html-react-parser'
 import { listen } from '@tauri-apps/api/event'
 import { useTranslation } from 'react-i18next'
+import type { DOMNode, Element, HTMLReactParserOptions } from 'html-react-parser'
 
-import { summarizeArticle, translateArticle, estimateTokens } from '@/services/ai'
+import { translateArticle, estimateTokens } from '@/services/ai'
+import { generateSummaryForArticle } from '@/services/runtime'
 import { useFeedStore } from '@/stores/feedStore'
 import { useSettingsStore, defaultShortcuts } from '@/stores/settingsStore'
 import { AiUiTask, useAiTaskUiStore } from '@/stores/aiTaskUiStore'
 import { toast } from '@/stores/toastStore'
 
-import { buildRenderableHtml, extractTocFromHtml } from '@/utils/articleContent'
+import { renderArticleContent, type TocItem } from '@/utils/articleContent'
 import { handleExternalNavigation } from '@/utils/externalNavigation'
 import { normalizeHref, resolveHref } from '@/utils/linkPolicy'
+import { shouldProxyMediaUrl } from '@/utils/mediaProxy'
 import { formatDate } from '@/utils'
 import { invoke, isTauriEnv } from '@/utils/tauri'
 
-import type { Article, ArticleScore, Tag } from '@/types'
+import type { Article, ArticleNavigationContext, ArticleScore, Tag } from '@/types'
 
 import CodeBlock from './CodeBlock'
+import LazyHtmlContent, { loadHtmlParser } from './LazyHtmlContent'
 import VideoEmbed from './VideoEmbed'
 
 import {
@@ -38,6 +41,35 @@ import {
   X,
 } from 'lucide-react'
 import { countTasksByStatus, getDisplayStatus, getAiTaskSummary } from '@/utils/aiTaskStatus'
+
+type HtmlParserModule = typeof import('html-react-parser')
+
+function PanelRichText({ content }: { content: string }) {
+  const [html, setHtml] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+
+    void renderArticleContent(content, `panel:${content.length}:${content.slice(0, 128)}`)
+      .then((result) => {
+        if (!cancelled) {
+          setHtml(result.html)
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to render panel content:', error)
+        if (!cancelled) {
+          setHtml('')
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [content])
+
+  return <LazyHtmlContent html={html} />
+}
 
 const TranslationPanel = ({
   translation,
@@ -85,7 +117,7 @@ const TranslationPanel = ({
           <div className="text-red-500 dark:text-red-400 text-sm">{error}</div>
         ) : (
           <div className="prose prose-sm prose-slate dark:prose-invert max-w-none text-slate-600 dark:text-slate-300">
-            {parse(buildRenderableHtml(translation || ''))}
+            <PanelRichText content={translation || ''} />
           </div>
         )}
       </div>
@@ -139,7 +171,7 @@ const SummaryPanel = ({
           <div className="text-red-500 dark:text-red-400 text-sm">{error}</div>
         ) : (
           <div className="prose prose-sm prose-slate dark:prose-invert max-w-none text-slate-600 dark:text-slate-300">
-            {parse(buildRenderableHtml(summary || ''))}
+            <PanelRichText content={summary || ''} />
           </div>
         )}
       </div>
@@ -187,6 +219,35 @@ const ScoreBadges = ({
 
 const EMPTY_TASKS: AiUiTask[] = []
 
+function buildArticleNavigationContext(pathname: string, search: string): ArticleNavigationContext {
+  const searchParams = new URLSearchParams(search)
+
+  if (pathname.startsWith('/unread')) return { scope: 'unread' }
+  if (pathname.startsWith('/starred')) return { scope: 'starred' }
+  if (pathname.startsWith('/favorites')) return { scope: 'favorite' }
+
+  if (pathname.startsWith('/feed/')) {
+    const feedId = Number(pathname.split('/')[2])
+    return Number.isFinite(feedId) ? { scope: 'feed', feedId } : { scope: 'all' }
+  }
+
+  if (pathname.startsWith('/tags/')) {
+    const tagId = Number(pathname.split('/')[2])
+    return Number.isFinite(tagId) ? { scope: 'tag', tagId } : { scope: 'all' }
+  }
+
+  if (pathname.startsWith('/group/')) {
+    const groupId = Number(pathname.split('/')[2])
+    return Number.isFinite(groupId) ? { scope: 'group', groupId } : { scope: 'all' }
+  }
+
+  if (pathname.startsWith('/search')) {
+    return { scope: 'search', query: searchParams.get('q') || '' }
+  }
+
+  return { scope: 'all' }
+}
+
 export default function ArticleView() {
   const { t } = useTranslation();
   const { articleId } = useParams<{ articleId: string }>()
@@ -194,6 +255,13 @@ export default function ArticleView() {
   const navigate = useNavigate()
 
   const basePath = location.pathname.split('/article/')[0] || '/'
+  const navigationContext = useMemo(
+    () => buildArticleNavigationContext(location.pathname, location.search),
+    [location.pathname, location.search]
+  )
+  const backPath = `${basePath || '/'}${location.search}`
+  const buildArticlePath = (id: number) =>
+    `${basePath === '/' ? '' : basePath}/article/${id}${location.search}`
 
   const feeds = useFeedStore((state) => state.feeds)
   const aiProfiles = useSettingsStore((state) => state.aiProfiles)
@@ -204,6 +272,7 @@ export default function ArticleView() {
   const autoMarkRead = useSettingsStore((state) => state.autoMarkRead)
   const externalLinkBehavior = useSettingsStore((state) => state.externalLinkBehavior)
   const shortcuts = useSettingsStore((state) => state.shortcuts ?? defaultShortcuts)
+  const shortcutsEnabled = useSettingsStore((state) => state.shortcutsEnabled)
 
   const [article, setArticle] = useState<Article | null>(null)
   const [tags, setTags] = useState<Tag[]>([])
@@ -214,7 +283,6 @@ export default function ArticleView() {
   const [isLoading, setIsLoading] = useState(true)
 
   const [readingProgress, setReadingProgress] = useState(0)
-  const [toc, setToc] = useState<{ id: string; text: string; level: number }[]>([])
   const [showToc, setShowToc] = useState(false)
 
   const [summary, setSummary] = useState<string | null>(null)
@@ -224,8 +292,10 @@ export default function ArticleView() {
   const [translation, setTranslation] = useState<string | null>(null)
   const [isTranslating, setIsTranslating] = useState(false)
   const [translationError, setTranslationError] = useState<string | null>(null)
-
-  const [tokenEstimate, setTokenEstimate] = useState<number>(0)
+  const [renderedArticleHtml, setRenderedArticleHtml] = useState('')
+  const [toc, setToc] = useState<TocItem[]>([])
+  const [isRenderingContent, setIsRenderingContent] = useState(false)
+  const [parserModule, setParserModule] = useState<HtmlParserModule | null>(null)
 
   const contentScrollRef = useRef<HTMLDivElement | null>(null)
 
@@ -258,16 +328,14 @@ export default function ArticleView() {
   }
 
   const articleBodyRaw = article?.content || article?.summary || ''
-  const renderedArticleHtml = useMemo(
-    () => buildRenderableHtml(articleBodyRaw),
-    [articleBodyRaw]
-  )
+  const tokenEstimate = useMemo(() => {
+    if (!article) return 0
+    return estimateTokens(article.content || article.summary || article.title || '')
+  }, [article])
 
   useEffect(() => {
-    setToc(extractTocFromHtml(renderedArticleHtml))
-  }, [renderedArticleHtml])
+    if (!shortcutsEnabled) return
 
-  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
         ['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName) ||
@@ -294,14 +362,7 @@ export default function ArticleView() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [article, shortcuts, externalLinkBehavior])
-
-  useEffect(() => {
-    if (article) {
-      const content = article.content || article.summary || article.title || ''
-      setTokenEstimate(estimateTokens(content))
-    }
-  }, [article])
+  }, [article, shortcuts, shortcutsEnabled, externalLinkBehavior])
 
   useEffect(() => {
     if (articleId && isTauriEnv) {
@@ -324,7 +385,7 @@ export default function ArticleView() {
     let unlistenFn: (() => void) | null = null
 
     listen<void>('articles-deleted', () => {
-      navigate(basePath)
+      navigate(backPath)
     })
       .then((unlisten) => {
         unlistenFn = unlisten
@@ -338,13 +399,72 @@ export default function ArticleView() {
         unlistenFn()
       }
     }
-  }, [basePath, navigate])
+  }, [backPath, navigate])
 
   useEffect(() => {
     if (article && isTauriEnv) {
       void loadNavigation()
     }
-  }, [article])
+  }, [article, navigationContext])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void loadHtmlParser()
+      .then((module) => {
+        if (!cancelled) {
+          setParserModule(module)
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load HTML parser:', error)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!articleBodyRaw.trim()) {
+      setRenderedArticleHtml('')
+      setToc([])
+      setIsRenderingContent(false)
+      return
+    }
+
+    setIsRenderingContent(true)
+
+    const contentCacheKey = article
+      ? `${article.id}:${article.updatedAt ?? ''}:${articleBodyRaw.length}:${articleBodyRaw.slice(0, 128)}`
+      : articleBodyRaw
+
+    void renderArticleContent(articleBodyRaw, contentCacheKey)
+      .then((result) => {
+        if (!cancelled) {
+          setRenderedArticleHtml(result.html)
+          setToc(result.toc)
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to render article content:', error)
+        if (!cancelled) {
+          setRenderedArticleHtml('')
+          setToc([])
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsRenderingContent(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [article, articleBodyRaw])
 
   useEffect(() => {
     const container = contentScrollRef.current
@@ -381,11 +501,13 @@ export default function ArticleView() {
 
       if (found && !found.isRead && autoMarkRead) {
         await invoke('mark_article_read', { id: found.id, isRead: true })
-        window.dispatchEvent(
-          new CustomEvent('article-updated', {
-            detail: { id: found.id, isRead: true, feedId: found.feedId },
-          })
-        )
+        setArticle({ ...found, isRead: true })
+        useFeedStore.getState().applyArticleUpdate({
+          id: found.id,
+          isRead: true,
+          feedId: found.feedId,
+          previousIsRead: found.isRead,
+        })
       }
     } catch (error) {
       console.error('Failed to load article:', error)
@@ -400,6 +522,7 @@ export default function ArticleView() {
     try {
       const [prev, next] = await invoke<[Article | null, Article | null]>('get_article_navigation', {
         currentId: article.id,
+        context: navigationContext,
       })
       setPrevArticle(prev || null)
       setNextArticle(next || null)
@@ -446,11 +569,11 @@ export default function ArticleView() {
       const newStarState = !article.isStarred
       await invoke('toggle_article_star', { id: article.id })
       setArticle({ ...article, isStarred: newStarState })
-      window.dispatchEvent(
-        new CustomEvent('article-updated', {
-          detail: { id: article.id, isStarred: newStarState, feedId: article.feedId },
-        })
-      )
+      useFeedStore.getState().applyArticleUpdate({
+        id: article.id,
+        isStarred: newStarState,
+        feedId: article.feedId,
+      })
     } catch (error) {
       console.error('Failed to toggle star:', error)
     }
@@ -463,11 +586,11 @@ export default function ArticleView() {
       const newFavoriteState = !article.isFavorite
       await invoke('toggle_article_favorite', { id: article.id })
       setArticle({ ...article, isFavorite: newFavoriteState })
-      window.dispatchEvent(
-        new CustomEvent('article-updated', {
-          detail: { id: article.id, isFavorite: newFavoriteState, feedId: article.feedId },
-        })
-      )
+      useFeedStore.getState().applyArticleUpdate({
+        id: article.id,
+        isFavorite: newFavoriteState,
+        feedId: article.feedId,
+      })
     } catch (error) {
       console.error('Failed to toggle favorite:', error)
     }
@@ -480,11 +603,12 @@ export default function ArticleView() {
       const newReadState = !article.isRead
       await invoke('mark_article_read', { id: article.id, isRead: newReadState })
       setArticle({ ...article, isRead: newReadState })
-      window.dispatchEvent(
-        new CustomEvent('article-updated', {
-          detail: { id: article.id, isRead: newReadState, feedId: article.feedId },
-        })
-      )
+      useFeedStore.getState().applyArticleUpdate({
+        id: article.id,
+        isRead: newReadState,
+        feedId: article.feedId,
+        previousIsRead: article.isRead,
+      })
     } catch (error) {
       console.error('Failed to toggle read state:', error)
     }
@@ -507,6 +631,7 @@ export default function ArticleView() {
     setIsGenerating(true)
     setSummaryError(null)
     setSummary(null)
+    useAiTaskUiStore.getState().setProcessing(article.id, 'summary')
 
     try {
       const cached = await invoke<string | null>('get_article_ai_summary', {
@@ -514,16 +639,17 @@ export default function ArticleView() {
       })
       if (cached) {
         setSummary(cached)
+        useAiTaskUiStore.getState().clearTask(article.id, 'summary')
         return
       }
 
-      const content = article.content || article.summary || article.title
-      const result = await summarizeArticle(content, profile)
+      const result = await generateSummaryForArticle(article.id, profile)
       setSummary(result)
-      await invoke('upsert_article_ai_summary', { articleId: article.id, summary: result })
+      useAiTaskUiStore.getState().clearTask(article.id, 'summary')
     } catch (error: any) {
       const errorMessage = error?.message || t('articleView.summaryFailed')
       setSummaryError(errorMessage)
+      useAiTaskUiStore.getState().setFailed(article.id, 'summary', errorMessage)
       toast.error(errorMessage)
     } finally {
       setIsGenerating(false)
@@ -616,14 +742,13 @@ export default function ArticleView() {
     </div>
   )
 
-  const parseContent = (content: string) => {
-    if (!content) return null
+  const parsedArticleContent = useMemo(() => {
+    if (!renderedArticleHtml || !parserModule) return null
 
     const baseUrl = article?.link || window.location.href
-
     const parserOptions: HTMLReactParserOptions = {
       replace: (domNode) => {
-        if (domNode instanceof Element && domNode.name === 'img') {
+        if (domNode instanceof parserModule.Element && domNode.name === 'img') {
           let src = domNode.attribs?.['data-src'] || domNode.attribs?.src || ''
           if (src.startsWith('data:')) {
             return null
@@ -635,10 +760,10 @@ export default function ArticleView() {
             src = resolveHref(src, baseUrl)
           }
 
-          if (src && isTauriEnv) {
-            domNode.attribs.src = `rss-media://localhost/${encodeURIComponent(src)}`
-          } else if (src) {
-            domNode.attribs.src = src
+          if (src) {
+            domNode.attribs.src = isTauriEnv && shouldProxyMediaUrl(src)
+              ? `rss-media://localhost/${encodeURIComponent(src)}`
+              : src
           }
 
           delete domNode.attribs.width
@@ -652,10 +777,10 @@ export default function ArticleView() {
           domNode.attribs.class = `${domNode.attribs.class || ''} article-image`.trim()
         }
 
-        if (domNode instanceof Element && domNode.name === 'a') {
+        if (domNode instanceof parserModule.Element && domNode.name === 'a') {
           const rawHref = domNode.attribs?.href || ''
           const normalized = normalizeHref(rawHref)
-          const children = domToReact(domNode.children as DOMNode[], parserOptions)
+          const children = parserModule.domToReact(domNode.children as DOMNode[], parserOptions)
 
           if (!normalized) {
             return <span className="text-slate-400 dark:text-slate-500">{children}</span>
@@ -678,35 +803,30 @@ export default function ArticleView() {
           )
         }
 
-        if (domNode instanceof Element && domNode.name === 'pre') {
+        if (domNode instanceof parserModule.Element && domNode.name === 'pre') {
           const children = domNode.children as DOMNode[]
           const codeNode = children.find(
-            (child) => child instanceof Element && child.name === 'code'
+            (child) => child instanceof parserModule.Element && child.name === 'code'
           ) as Element | undefined
 
           if (codeNode && codeNode.children && codeNode.children.length > 0) {
             const getCodeText = (node: DOMNode): string => {
               if (node.type === 'text') return (node as any).data || ''
-              if (node instanceof Element && node.children) {
+              if (node instanceof parserModule.Element && node.children) {
                 return (node.children as DOMNode[]).map(getCodeText).join('')
               }
               return ''
             }
 
             const codeText = (codeNode.children as DOMNode[]).map(getCodeText).join('')
-
-            let language = 'text'
             const className = codeNode.attribs?.class || ''
             const match = className.match(/language-(\w+)/)
-            if (match) {
-              language = match[1]
-            }
 
-            return <CodeBlock language={language} value={codeText} />
+            return <CodeBlock language={match ? match[1] : 'text'} value={codeText} />
           }
         }
 
-        if (domNode instanceof Element && domNode.name === 'iframe') {
+        if (domNode instanceof parserModule.Element && domNode.name === 'iframe') {
           const src = domNode.attribs?.src || ''
           if (src.includes('youtube.com') || src.includes('youtu.be')) {
             return <VideoEmbed url={src} type="youtube" />
@@ -716,28 +836,28 @@ export default function ArticleView() {
           }
         }
 
-        if (domNode instanceof Element && domNode.name === 'table') {
+        if (domNode instanceof parserModule.Element && domNode.name === 'table') {
           return (
             <div className="my-6 overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
               <table className="min-w-full border-collapse text-sm">
-                {domToReact(domNode.children as DOMNode[], parserOptions)}
+                {parserModule.domToReact(domNode.children as DOMNode[], parserOptions)}
               </table>
             </div>
           )
         }
 
-        if (domNode instanceof Element && domNode.name === 'th') {
+        if (domNode instanceof parserModule.Element && domNode.name === 'th') {
           domNode.attribs.class = `${domNode.attribs.class || ''} border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-left font-semibold`
         }
 
-        if (domNode instanceof Element && domNode.name === 'td') {
+        if (domNode instanceof parserModule.Element && domNode.name === 'td') {
           domNode.attribs.class = `${domNode.attribs.class || ''} border-b border-slate-100 dark:border-slate-800 px-3 py-2 align-top`
         }
       },
     }
 
-    return parse(content, parserOptions)
-  }
+    return parserModule.default(renderedArticleHtml, parserOptions)
+  }, [article?.link, parserModule, renderedArticleHtml])
 
   const showSummary = summary || isGenerating || summaryError
   const showTopSummary = showSummary && summaryPosition === 'top'
@@ -796,7 +916,7 @@ export default function ArticleView() {
       <header className="sticky top-0 z-20 px-4 py-3 border-b border-slate-200 dark:border-slate-700/50 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md">
         <div className="flex items-center gap-3">
           <Link
-            to={basePath}
+            to={backPath}
             className="p-2 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
           >
             <ArrowLeft className="w-5 h-5" />
@@ -986,9 +1106,15 @@ export default function ArticleView() {
                 />
               )}
 
-              {renderedArticleHtml ? (
+              {isRenderingContent || (renderedArticleHtml && !parsedArticleContent) ? (
+                <div className="space-y-3 animate-pulse">
+                  <div className="h-4 rounded bg-slate-200 dark:bg-slate-700" />
+                  <div className="h-4 w-11/12 rounded bg-slate-200 dark:bg-slate-700" />
+                  <div className="h-4 w-4/5 rounded bg-slate-200 dark:bg-slate-700" />
+                </div>
+              ) : renderedArticleHtml ? (
                 <div className="article-content">
-                  {parseContent(renderedArticleHtml)}
+                  {parsedArticleContent}
                 </div>
               ) : (
                 <div className="text-slate-600 dark:text-slate-300">
@@ -1010,9 +1136,7 @@ export default function ArticleView() {
             <nav className="mt-12 pt-8 border-t border-slate-200 dark:border-slate-700/50">
               <div className="flex flex-col md:flex-row justify-between items-stretch gap-4">
                 <Link
-                  to={
-                    prevArticle ? `${basePath === '/' ? '' : basePath}/article/${prevArticle.id}` : '#'
-                  }
+                  to={prevArticle ? buildArticlePath(prevArticle.id) : '#'}
                   className={`flex-1 flex items-center gap-3 p-4 rounded-xl transition-all duration-200 cursor-pointer ${
                     prevArticle
                       ? 'bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800'
@@ -1050,9 +1174,7 @@ export default function ArticleView() {
                 </Link>
 
                 <Link
-                  to={
-                    nextArticle ? `${basePath === '/' ? '' : basePath}/article/${nextArticle.id}` : '#'
-                  }
+                  to={nextArticle ? buildArticlePath(nextArticle.id) : '#'}
                   className={`flex-1 flex items-center justify-end gap-3 p-4 rounded-xl transition-all duration-200 cursor-pointer ${
                     nextArticle
                       ? 'bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800'

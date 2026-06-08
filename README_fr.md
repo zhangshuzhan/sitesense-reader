@@ -14,104 +14,123 @@
 <h1 align="center">RSS Reader</h1>
 
 <p align="center">
-  <strong>Un lecteur RSS de bureau propulsé par l'IA, axé sur le local. Pas de cloud. Pas de suivi. Juste vos flux.</strong>
+  <strong>Un lecteur RSS de bureau local-first avec des outils d'IA optionnels.</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/WangJinxin-flab/RSS-Reader/releases"><img src="https://img.shields.io/github/v/release/WangJinxin-flab/RSS-Reader?color=blue&label=T%C3%A9l%C3%A9charger" alt="Releases"></a>
-  <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
-  <a href="https://tauri.app/"><img src="https://img.shields.io/badge/Built_with-Tauri_2.0-24C8DB?logo=tauri&logoColor=white" alt="Tauri"></a>
+  <a href="https://github.com/JinxinWonderWorld/RSS-Reader/releases"><img src="https://img.shields.io/github/v/release/JinxinWonderWorld/RSS-Reader?color=blue&label=T%C3%A9l%C3%A9charger" alt="Releases"></a>
+  <img src="https://img.shields.io/badge/Version-0.2.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Platform-macOS-lightgrey" alt="Platform">
+  <a href="https://tauri.app/"><img src="https://img.shields.io/badge/Built_with-Tauri_2-24C8DB?logo=tauri&logoColor=white" alt="Tauri"></a>
 </p>
 
 <p align="center">
-  <a href="#pourquoi-rss-reader">Pourquoi RSS Reader ?</a> •
+  <a href="#aperçu">Aperçu</a> •
   <a href="#fonctionnalités">Fonctionnalités</a> •
-  <a href="#télécharger">Télécharger</a> •
-  <a href="#technologies">Technologies</a> •
-  <a href="#développement">Développement</a>
+  <a href="#nouveautés-de-020">Nouveautés</a> •
+  <a href="#téléchargement">Téléchargement</a> •
+  <a href="#développement">Développement</a> •
+  <a href="#architecture">Architecture</a>
 </p>
 
 ---
 
-**Capture d'écran**
-<img src="imgs/screenshot.png" alt="App Preview" width="800">
+<p align="center">
+  <img src="imgs/screenshot.png" alt="RSS Reader screenshot" width="800">
+</p>
 
-## Pourquoi RSS Reader ?
+## Aperçu
 
-Dans un monde où les services par abonnement et la synchronisation sur le cloud sont omniprésents, **RSS Reader** adopte une approche différente. C'est une application de bureau moderne qui conserve toutes vos données strictement sur votre machine locale. Propulsé par Tauri et Rust, il est extrêmement rapide, économe en mémoire et profondément intégré à l'IA pour améliorer votre expérience de lecture.
+RSS Reader est une application de bureau Tauri 2 pour lire les flux RSS, Atom et JSON. Elle stocke les données localement dans SQLite, réduit le coût des mises à jour avec des requêtes conditionnelles et ajoute des workflows d'IA optionnels pour les résumés, la traduction et la notation des articles.
+
+L'application suit le comportement natif de macOS : `Command+W` ferme la fenêtre tout en gardant l'application active dans le Dock, et `Command+Q` quitte réellement l'application.
 
 ## Fonctionnalités
 
-### Lecture et Gestion de Flux
-- **Support Universel :** Abonnez-vous facilement aux flux RSS, Atom et JSON.
-- **Synchronisation Intelligente :** Synchronisation incrémentielle utilisant les en-têtes `ETag` et `Last-Modified` pour économiser la bande passante.
-- **Support OPML :** Importez et exportez facilement vos listes de flux.
-- **Lecture Immersive :** Mode de lecture épuré, barre de progression et table des matières dynamique.
-- **Priorité aux Médias :** Les vidéos YouTube et Bilibili intégrées fonctionnent de manière native.
+### Lecture et gestion des flux
+- Abonnement aux flux RSS, Atom et JSON.
+- Import et export des abonnements avec OPML.
+- Vues pour tous les articles, les non lus, les favoris étoilés et les favoris.
+- Organisation des articles par flux, étiquettes et groupes.
+- Recherche locale en texte intégral.
+- Listes virtualisées pour les grandes collections d'articles.
 
-### Intégration de l'IA
-- **Résumés Intelligents :** Générez automatiquement des résumés d'articles à l'aide des API d'OpenAI ou d'Anthropic.
-- **Traduction en un clic :** Traduisez des articles entiers nativement sans quitter l'application.
-- **Règles d'Automatisation :** Créez de puissantes règles basées sur l'IA (ex. "Mettre automatiquement en favori les articles avec un score de pertinence IA > 80").
+### Performance et tâches d'arrière-plan
+- Stockage local des articles, flux, règles et paramètres.
+- Utilisation de `ETag` et `Last-Modified` pour ignorer les flux inchangés.
+- Rafraîchissement des flux en Rust avec une concurrence limitée.
+- Planificateur léger en arrière-plan quand la fenêtre principale est fermée.
+- Pause des tâches lourdes d'interface et d'IA quand aucune fenêtre n'est ouverte.
+- Chargement à la demande du rendu d'article, du nettoyage HTML, du Markdown et de la coloration du code.
+- Proxy `rss-media://` borné pour les médias qui nécessitent du cache ou des requêtes Range.
+- Chargement des vidéos intégrées uniquement après une action de l'utilisateur.
 
-### Expérience de Bureau Native
-- **Mise en cache locale :** Le protocole personnalisé `rss-media://` met en cache de manière sécurisée les images et les vidéos en streaming pour une consultation hors ligne.
-- **Hautes Performances :** Les listes virtualisées (`react-virtuoso`) gèrent des milliers d'articles sans effort.
-- **Conçu pour les Utilisateurs Avancés :** Raccourcis clavier globaux complets pour une navigation sans souris.
-- **Thèmes :** Thèmes Sombre et Clair adaptés au système.
-- **Multilingue :** Disponible en arabe, chinois, anglais, français, russe et espagnol.
+### Outils d'IA optionnels
+- Configuration de profils compatibles OpenAI ou Anthropic.
+- Génération de résumés pour un article.
+- Traduction du contenu des articles.
+- Génération de synthèses par lot pour plusieurs articles.
+- Règles d'automatisation et notation IA pour classer ou mettre en avant des articles.
+- Les clés API restent dans les paramètres locaux de l'application.
 
-## Télécharger
+### Expérience de bureau
+- Comportement natif du menu macOS pour fermer, rouvrir, masquer et quitter.
+- Raccourcis clavier avec interrupteur d'activation dans les paramètres.
+- Thèmes clair, sombre et système.
+- Menus contextuels et actions par lot pour les articles.
+- Interface en anglais, chinois, russe, espagnol, français et arabe.
 
-Des binaires prêts à l'emploi sont disponibles via [GitHub Releases](https://github.com/WangJinxin-flab/RSS-Reader/releases).
+## Nouveautés de 0.2.0
 
-> [!TIP]
-> **Mise à jour**
-> L'application prend en charge les mises à jour automatiques nativement via Tauri. Une fois installé, vous serez automatiquement averti des nouvelles versions.
+- Cycle de vie macOS standard : `Command+W` ferme la fenêtre, `Command+Q` quitte l'application.
+- Consommation réduite en état masqué grâce à la destruction du WebView quand la fenêtre est fermée.
+- Rafraîchissement et nettoyage d'arrière-plan gérés par Rust.
+- Récupération conditionnelle des flux avec `ETag` et `Last-Modified`.
+- Rendu d'article différé et chargement média plus léger.
+- Nouvel interrupteur pour les raccourcis clavier dans les paramètres.
+- Corrections pour la restauration de route, la navigation depuis les paramètres, les compteurs de flux et la synchronisation de l'état lu.
 
-## Technologies
+## Téléchargement
 
-Ce projet exploite les langages Web et système modernes pour offrir une application native légère :
+Les builds prêts à l'emploi sont publiés sur la page [GitHub Releases](https://github.com/JinxinWonderWorld/RSS-Reader/releases).
 
-- **Cœur :** [Tauri 2.0](https://v2.tauri.app/) + [Rust](https://www.rust-lang.org/)
-- **Frontend :** [React 18](https://react.dev/) + [TypeScript](https://www.typescriptlang.org/)
-- **Style :** [Tailwind CSS](https://tailwindcss.com/)
-- **Gestion d'État :** [Zustand](https://docs.pmnd.rs/zustand/)
-- **Base de Données :** SQLite (via `rusqlite` intégré)
+La cible de version actuelle est macOS. La configuration Tauri conserve la prise en charge de Windows et Linux, mais les tests de publication se concentrent actuellement sur macOS.
 
 ## Développement
 
 ### Prérequis
-- [Node.js](https://nodejs.org/) (v18+)
-- [Rust](https://www.rust-lang.org/tools/install) (v1.70+)
+- [Node.js](https://nodejs.org/) 18 ou plus récent
+- [Rust](https://www.rust-lang.org/tools/install) 1.70 ou plus récent
 
-### Démarrage Rapide
+### Démarrage rapide
 
 ```bash
-# 1. Cloner le dépôt
-git clone https://github.com/your-username/rss-reader.git
-cd rss-reader
-
-# 2. Installer les dépendances frontend
+git clone https://github.com/JinxinWonderWorld/RSS-Reader.git
+cd RSS-Reader
 npm install
-
-# 3. Démarrer le serveur de développement (Frontend + Backend Rust)
 npm run tauri:dev
 ```
 
-### Commandes Utiles
+### Commandes utiles
 
 | Commande | Description |
-|---------|-------------|
-| `npm run tauri:build` | Compiler l'application pour la version finale |
-| `npm run dev`         | Exécuter uniquement le frontend Vite (sans le backend Rust) |
-| `npm test`            | Exécuter les tests du frontend (Vitest) |
-| `cargo test`          | Exécuter les tests du backend (Rust) |
-| `npm run lint`        | Exécuter ESLint |
+| --- | --- |
+| `npm run dev` | Lancer uniquement le frontend Vite |
+| `npm run build` | Vérifier les types et compiler le frontend |
+| `npm run tauri:dev` | Lancer l'application Tauri complète en développement |
+| `npm run tauri:build` | Compiler le bundle de publication |
+| `npm test -- --run` | Exécuter les tests frontend |
+| `npm run lint` | Exécuter ESLint |
+| `cargo test --manifest-path src-tauri/Cargo.toml` | Exécuter les tests Rust |
 
-### Aperçu de l'Architecture
-L'application utilise une séparation claire des responsabilités via l'IPC de Tauri (`invoke`) :
-- `src-tauri/src/db/`: Opérations SQLite modulaires (flux, étiquettes, groupes, règles).
-- `src-tauri/src/feed/`: Analyse des flux utilisant `feed-rs`.
-- `src/stores/`: Stores Zustand persistés dans LocalStorage pour l'état global.
-- `src/components/`: Composants React modulaires pour l'interface utilisateur.
+## Architecture
+
+- `src-tauri/src/app_runtime.rs`: état runtime, planification d'arrière-plan et garde-fous de nettoyage.
+- `src-tauri/src/window_lifecycle.rs`: fermeture, réouverture et restauration de l'état de fenêtre macOS.
+- `src-tauri/src/feed/`: récupération des flux, requêtes conditionnelles et parsing.
+- `src-tauri/src/db/`: schéma SQLite et accès aux données.
+- `src-tauri/src/media_protocol.rs`: proxy média borné et réponses Range.
+- `src-tauri/src/ai.rs`: résumés IA, traduction, synthèses par lot et traitement de file.
+- `src/services/runtime.ts`: pont frontend vers les commandes runtime Rust.
+- `src/stores/`: stores Zustand pour flux, paramètres, règles, état UI et historique de recherche.
+- `src/components/`: composants React et rendu d'article chargé à la demande.

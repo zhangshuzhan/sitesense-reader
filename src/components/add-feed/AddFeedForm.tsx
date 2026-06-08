@@ -6,8 +6,8 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { validateFeedUrl } from '@/utils'
 import { toast } from '@/stores/toastStore'
 import { Loader2, AlertCircle } from 'lucide-react'
-import { enqueueAutoSummary } from '@/components/ai/AutoSummaryWorker'
 import { Article } from '@/types'
+import { processNewArticles } from '@/services/runtime'
 
 interface AddFeedFormProps {
   onClose: () => void
@@ -76,8 +76,7 @@ export default function AddFeedForm({ onClose }: AddFeedFormProps) {
 
       const feeds = await invoke<any[]>('get_feeds')
       setFeeds(feeds)
-      enqueueAutoSummary(result.articles.map((a) => a.id))
-      window.dispatchEvent(new CustomEvent('ai-work-available'))
+      await processNewArticles(result.articles.map((article) => article.id))
 
       setUrl('')
       setCategory('')

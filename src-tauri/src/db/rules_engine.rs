@@ -120,25 +120,26 @@ pub fn evaluate_rule(rule: &Rule, article: &Article) -> (bool, bool) {
     if logic == "and" {
         // For AND logic, ALL non-AI conditions must match
         if non_ai_count > 0 && sync_match_count < non_ai_count {
-            return (false, false);
+            (false, false)
         }
         // If they all matched (or there were no non-AI conditions), the outcome depends on AI
-        if has_ai_condition {
-            return (true, true); // It matches so far, but needs AI to confirm
+        else if has_ai_condition {
+            (true, true) // It matches so far, but needs AI to confirm
         } else {
-            return (true, false); // All matched, no AI needed
+            (true, false) // All matched, no AI needed
         }
     } else {
         // For OR logic, if ANY non-AI condition matched, we can fire immediately
         if sync_match_count > 0 {
-            return (true, false);
+            (true, false)
         }
         // No non-AI condition matched, but we have an AI condition. Let AI decide.
-        if has_ai_condition {
-            return (true, true);
+        else if has_ai_condition {
+            (true, true)
+        } else {
+            // Nothing matched, no AI condition
+            (false, false)
         }
-        // Nothing matched, no AI condition
-        return (false, false);
     }
 }
 
@@ -499,8 +500,10 @@ mod tests {
     }
 
     fn read_is_read(conn: &Connection) -> i32 {
-        conn.query_row("SELECT is_read FROM articles WHERE id = 1", [], |row| row.get(0))
-            .unwrap()
+        conn.query_row("SELECT is_read FROM articles WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap()
     }
 
     fn read_execution_count(conn: &Connection) -> i64 {

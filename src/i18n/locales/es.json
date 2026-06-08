@@ -181,6 +181,8 @@
   },
   "shortcutSettings": {
     "title": "Atajos de teclado",
+    "enableShortcuts": "Activar atajos de teclado",
+    "enableShortcutsDesc": "Cuando está desactivado, los atajos de teclado no responden",
     "resetDefaults": "Restablecer",
     "nextArticle": "Artículo siguiente",
     "prevArticle": "Artículo anterior",
@@ -565,6 +567,8 @@
   },
   "videoEmbed": {
     "loadFailed": "Error al cargar el video. Por favor, abre el enlace original para verlo.",
+    "clickToLoad": "El video no se carga de forma predeterminada. Haz clic para crear el reproductor.",
+    "loadVideo": "Cargar video",
     "openOriginal": "Abrir video original"
   },
   "timeAgo": {

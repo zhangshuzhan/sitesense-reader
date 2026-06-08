@@ -181,6 +181,8 @@
   },
   "shortcutSettings": {
     "title": "快捷键设置",
+    "enableShortcuts": "启用快捷键",
+    "enableShortcutsDesc": "关闭后所有键盘快捷键都不会生效",
     "resetDefaults": "恢复默认",
     "nextArticle": "下一篇文章",
     "prevArticle": "上一篇文章",
@@ -565,6 +567,8 @@
   },
   "videoEmbed": {
     "loadFailed": "视频加载失败，请打开原链接观看。",
+    "clickToLoad": "视频默认不加载，点击后再创建播放器。",
+    "loadVideo": "加载视频",
     "openOriginal": "打开原视频"
   },
   "timeAgo": {

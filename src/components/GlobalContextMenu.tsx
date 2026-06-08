@@ -9,6 +9,7 @@ import {
   Copy
 } from 'lucide-react'
 import { toast } from '@/stores/toastStore'
+import { useFeedStore } from '@/stores/feedStore'
 import { Article } from '@/types'
 
 export default function GlobalContextMenu() {
@@ -62,11 +63,15 @@ export default function GlobalContextMenu() {
     <div className="py-1">
       <button
         onClick={() => handleAction(async () => {
-          await invoke('mark_article_read', { id: article.id, isRead: !article.isRead })
+          const isRead = !article.isRead
+          await invoke('mark_article_read', { id: article.id, isRead })
           toast.success(article.isRead ? t('globalContextMenu.markAsUnread') : t('globalContextMenu.markAsRead'))
-          window.dispatchEvent(new CustomEvent('article-updated', { 
-            detail: { id: article.id, isRead: !article.isRead, feedId: article.feedId } 
-          }))
+          useFeedStore.getState().applyArticleUpdate({
+            id: article.id,
+            isRead,
+            feedId: article.feedId,
+            previousIsRead: article.isRead,
+          })
         })}
         className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2 cursor-pointer"
       >
@@ -76,10 +81,9 @@ export default function GlobalContextMenu() {
       
       <button
         onClick={() => handleAction(async () => {
+          const isStarred = !article.isStarred
           await invoke('toggle_article_star', { id: article.id })
-          window.dispatchEvent(new CustomEvent('article-updated', { 
-            detail: { id: article.id, isStarred: !article.isStarred, feedId: article.feedId } 
-          }))
+          useFeedStore.getState().applyArticleUpdate({ id: article.id, isStarred, feedId: article.feedId })
           toast.success(article.isStarred ? t('globalContextMenu.removeStar') : t('globalContextMenu.addStar'))
         })}
         className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2 cursor-pointer"
@@ -90,10 +94,9 @@ export default function GlobalContextMenu() {
 
       <button
         onClick={() => handleAction(async () => {
+          const isFavorite = !article.isFavorite
           await invoke('toggle_article_favorite', { id: article.id })
-          window.dispatchEvent(new CustomEvent('article-updated', { 
-            detail: { id: article.id, isFavorite: !article.isFavorite, feedId: article.feedId } 
-          }))
+          useFeedStore.getState().applyArticleUpdate({ id: article.id, isFavorite, feedId: article.feedId })
           toast.success(article.isFavorite ? t('globalContextMenu.removeFavorite') : t('globalContextMenu.addFavorite'))
         })}
         className="w-full text-left px-4 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center gap-2 cursor-pointer"

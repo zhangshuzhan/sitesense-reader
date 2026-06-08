@@ -1,10 +1,10 @@
-use rss_reader::feed::FeedFetcher;
+use rss_reader::feed::{FeedFetcher, FeedRequestOptions};
 use std::env;
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     // Default URL if not provided
     let url = if args.len() > 1 {
         &args[1]
@@ -25,14 +25,28 @@ async fn main() {
     println!("----------------------------------------");
 
     let fetcher = FeedFetcher::new().expect("Failed to build HTTP client in debug_feed");
-    
-    match fetcher.fetch_feed(url, mirror).await {
-        Ok((feed, articles)) => {
+
+    match fetcher
+        .fetch_feed(
+            url,
+            FeedRequestOptions {
+                rsshub_domain: mirror,
+                etag: None,
+                last_modified: None,
+            },
+        )
+        .await
+    {
+        Ok(result) => {
+            let Some(feed) = result.feed else {
+                println!("No feed payload returned.");
+                return;
+            };
             println!("✅ SUCCESS!");
             println!("Feed Title: {}", feed.title);
             println!("Feed Description: {:?}", feed.description);
-            println!("Found {} articles.", articles.len());
-            if let Some(first) = articles.first() {
+            println!("Found {} articles.", result.articles.len());
+            if let Some(first) = result.articles.first() {
                 println!("First Article: {}", first.title);
             }
         }

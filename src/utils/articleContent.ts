@@ -1,15 +1,23 @@
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
-
 export interface TocItem {
   id: string
   text: string
   level: number
 }
 
+type RendererDeps = {
+  marked: typeof import('marked').marked
+  DOMPurify: typeof import('dompurify').default
+}
+
+type RenderedArticleContent = {
+  html: string
+  toc: TocItem[]
+}
+
 const MARKDOWN_HINT_RE =
   /(^|\n)\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```|~~~|\|.+\|)|\[[^\]]+\]\([^)]+\)/m
 const HTML_RE = /<\/?[a-z][\s\S]*>/i
+const MAX_CACHE_ENTRIES = 48
 
 const ALLOWED_TAGS = [
   'a', 'abbr', 'b', 'blockquote', 'br', 'caption', 'code', 'del', 'details', 'div',
@@ -32,6 +40,41 @@ const ALLOWED_IFRAME_HOSTS = new Set([
   'bilibili.com',
 ])
 
+const renderCache = new Map<string, RenderedArticleContent>()
+let rendererDepsPromise: Promise<RendererDeps> | null = null
+
+function getCacheKey(content: string, explicitKey?: string): string {
+  return explicitKey && explicitKey.trim() ? explicitKey : content
+}
+
+function setRenderCache(key: string, value: RenderedArticleContent) {
+  if (renderCache.has(key)) {
+    renderCache.delete(key)
+  }
+
+  renderCache.set(key, value)
+
+  if (renderCache.size > MAX_CACHE_ENTRIES) {
+    const oldestKey = renderCache.keys().next().value
+    if (oldestKey) {
+      renderCache.delete(oldestKey)
+    }
+  }
+}
+
+async function loadRendererDeps(): Promise<RendererDeps> {
+  if (!rendererDepsPromise) {
+    rendererDepsPromise = Promise.all([import('marked'), import('dompurify')]).then(
+      ([markedModule, domPurifyModule]) => ({
+        marked: markedModule.marked,
+        DOMPurify: domPurifyModule.default,
+      })
+    )
+  }
+
+  return rendererDepsPromise
+}
+
 function escapeHtml(raw: string): string {
   return raw
     .replace(/&/g, '&amp;')
@@ -48,11 +91,11 @@ export function detectContentFormat(content: string): 'html' | 'markdown' | 'tex
   return 'text'
 }
 
-function normalizeToHtml(content: string): string {
+async function normalizeToHtml(content: string, deps: RendererDeps): Promise<string> {
   const format = detectContentFormat(content)
   if (format === 'html') return content
   if (format === 'markdown') {
-    return marked.parse(content, {
+    return deps.marked.parse(content, {
       async: false,
       breaks: true,
       gfm: true,
@@ -72,8 +115,8 @@ function isAllowedIframeSrc(src: string): boolean {
   }
 }
 
-function sanitizeHtml(html: string): string {
-  const purified = DOMPurify.sanitize(html, {
+function sanitizeHtml(html: string, deps: RendererDeps): string {
+  const purified = deps.DOMPurify.sanitize(html, {
     ALLOWED_ATTR,
     ALLOWED_TAGS,
     ALLOW_DATA_ATTR: true,
@@ -96,9 +139,9 @@ function sanitizeHtml(html: string): string {
     }
   })
 
-  doc.querySelectorAll('a[href]').forEach((a) => {
-    a.setAttribute('target', '_blank')
-    a.setAttribute('rel', 'noopener noreferrer')
+  doc.querySelectorAll('a[href]').forEach((anchor) => {
+    anchor.setAttribute('target', '_blank')
+    anchor.setAttribute('rel', 'noopener noreferrer')
   })
 
   return doc.body.innerHTML
@@ -116,14 +159,8 @@ function addHeadingIds(html: string): string {
   return doc.body.innerHTML
 }
 
-export function buildRenderableHtml(content: string): string {
-  if (!content?.trim()) return ''
-  const html = normalizeToHtml(content)
-  return addHeadingIds(sanitizeHtml(html))
-}
-
 export function extractTocFromHtml(html: string): TocItem[] {
-  if (!html?.trim()) return []
+  if (!html.trim()) return []
 
   const parser = new DOMParser()
   const doc = parser.parseFromString(html, 'text/html')
@@ -132,6 +169,39 @@ export function extractTocFromHtml(html: string): TocItem[] {
   return Array.from(headings).map((heading) => ({
     id: heading.id,
     text: heading.textContent || '',
-    level: parseInt(heading.tagName.charAt(1), 10),
+    level: Number.parseInt(heading.tagName.charAt(1), 10),
   }))
+}
+
+export async function buildRenderableHtml(content: string): Promise<string> {
+  const rendered = await renderArticleContent(content)
+  return rendered.html
+}
+
+export async function renderArticleContent(
+  content: string,
+  explicitCacheKey?: string
+): Promise<RenderedArticleContent> {
+  if (!content.trim()) {
+    return { html: '', toc: [] }
+  }
+
+  const cacheKey = getCacheKey(content, explicitCacheKey)
+  const cached = renderCache.get(cacheKey)
+  if (cached) {
+    renderCache.delete(cacheKey)
+    renderCache.set(cacheKey, cached)
+    return cached
+  }
+
+  const deps = await loadRendererDeps()
+  const html = await normalizeToHtml(content, deps)
+  const renderedHtml = addHeadingIds(sanitizeHtml(html, deps))
+  const rendered = {
+    html: renderedHtml,
+    toc: extractTocFromHtml(renderedHtml),
+  }
+
+  setRenderCache(cacheKey, rendered)
+  return rendered
 }

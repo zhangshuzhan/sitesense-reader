@@ -6,16 +6,27 @@ use tauri::{AppHandle, Manager, State};
 type DbState = Mutex<Connection>;
 
 #[tauri::command]
-pub fn clean_articles(conn: State<DbState>, days: u32, except_starred: bool) -> Result<usize, String> {
+pub fn clean_articles(
+    conn: State<DbState>,
+    days: u32,
+    except_starred: bool,
+) -> Result<usize, String> {
     let conn = conn.lock().map_err(|e| e.to_string())?;
+    clean_articles_inner(&conn, days, except_starred)
+}
 
+fn clean_articles_inner(
+    conn: &Connection,
+    days: u32,
+    except_starred: bool,
+) -> Result<usize, String> {
     let cutoff_date = chrono::Utc::now() - chrono::Duration::days(days as i64);
     let cutoff_str = cutoff_date.to_rfc3339();
 
     let sql = if except_starred {
-        "DELETE FROM articles WHERE published_at < ?1 AND is_starred = 0 AND is_favorite = 0"
+        "DELETE FROM articles WHERE COALESCE(published_at, created_at) < ?1 AND is_starred = 0 AND is_favorite = 0"
     } else {
-        "DELETE FROM articles WHERE published_at < ?1 AND is_favorite = 0"
+        "DELETE FROM articles WHERE COALESCE(published_at, created_at) < ?1 AND is_favorite = 0"
     };
 
     let count = conn.execute(sql, [cutoff_str]).map_err(|e| e.to_string())?;
@@ -85,7 +96,11 @@ fn get_dir_size(path: &std::path::Path) -> std::io::Result<u64> {
 }
 
 #[tauri::command]
-pub fn clean_media_cache(app: AppHandle, days: u32, max_size_mb: Option<u64>) -> Result<usize, String> {
+pub fn clean_media_cache(
+    app: AppHandle,
+    days: u32,
+    max_size_mb: Option<u64>,
+) -> Result<usize, String> {
     let cache_dir = app
         .path()
         .app_cache_dir()
@@ -155,4 +170,42 @@ pub fn clean_media_cache(app: AppHandle, days: u32, max_size_mb: Option<u64>) ->
     }
 
     Ok(deleted_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn setup_articles() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE articles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                published_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                is_starred INTEGER DEFAULT 0,
+                is_favorite INTEGER DEFAULT 0
+            )",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn clean_articles_falls_back_to_created_at_when_published_at_is_missing() {
+        let conn = setup_articles();
+        conn.execute(
+            "INSERT INTO articles (title, published_at, created_at)
+             VALUES ('Old undated article', NULL, '2020-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        let deleted = clean_articles_inner(&conn, 30, true).unwrap();
+
+        assert_eq!(deleted, 1);
+    }
 }

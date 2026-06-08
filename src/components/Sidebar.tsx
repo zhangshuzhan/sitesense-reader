@@ -79,41 +79,6 @@ export default function Sidebar() {
     }
   }, [])
 
-  // Listen for article updates to refresh feed counts
-  useEffect(() => {
-    const handleArticleUpdate = (e: CustomEvent) => {
-      // Optimistically update counts or reload feeds
-      // Since unread count logic is complex (requires SQL), reloading feeds is safer
-      // But reloading full feed list might be heavy.
-      // Let's assume loadFeeds is efficient enough or we accept the delay.
-      // Alternatively, we can try to update local state if we know the feedId and read status change.
-      
-      const { feedId, isRead } = e.detail
-      
-      if (typeof feedId === 'number' && typeof isRead === 'boolean') {
-        useFeedStore.setState(state => ({
-          feeds: state.feeds.map(f => {
-            if (f.id === feedId) {
-              return {
-                ...f,
-                unreadCount: isRead 
-                  ? Math.max(0, (f.unreadCount || 0) - 1) 
-                  : (f.unreadCount || 0) + 1
-              }
-            }
-            return f
-          })
-        }))
-      } else {
-        // Fallback to reload if details missing
-        loadFeeds()
-      }
-    }
-
-    window.addEventListener('article-updated', handleArticleUpdate as EventListener)
-    return () => window.removeEventListener('article-updated', handleArticleUpdate as EventListener)
-  }, [])
-
   // Listen for articles-deleted event to reload feeds
   useEffect(() => {
     if (!isTauriEnv) return

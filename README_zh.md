@@ -14,104 +14,123 @@
 <h1 align="center">RSS Reader</h1>
 
 <p align="center">
-  <strong>一款本地优先、AI 驱动的桌面 RSS 阅读器。无云端，无追踪，只有你的订阅。</strong>
+  <strong>本地优先的桌面 RSS 阅读器，并提供可选的 AI 工具。</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/WangJinxin-flab/RSS-Reader/releases"><img src="https://img.shields.io/github/v/release/WangJinxin-flab/RSS-Reader?color=blue&label=%E4%B8%8B%E8%BD%BD" alt="Releases"></a>
-  <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platforms">
-  <a href="https://tauri.app/"><img src="https://img.shields.io/badge/Built_with-Tauri_2.0-24C8DB?logo=tauri&logoColor=white" alt="Tauri"></a>
+  <a href="https://github.com/JinxinWonderWorld/RSS-Reader/releases"><img src="https://img.shields.io/github/v/release/JinxinWonderWorld/RSS-Reader?color=blue&label=%E4%B8%8B%E8%BD%BD" alt="Releases"></a>
+  <img src="https://img.shields.io/badge/Version-0.2.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Platform-macOS-lightgrey" alt="Platform">
+  <a href="https://tauri.app/"><img src="https://img.shields.io/badge/Built_with-Tauri_2-24C8DB?logo=tauri&logoColor=white" alt="Tauri"></a>
 </p>
 
 <p align="center">
-  <a href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E9%80%89%E6%8B%A9-rss-reader">为什么选择 RSS Reader？</a> •
-  <a href="#%E5%8A%9F%E8%83%BD%E7%89%B9%E6%80%A7">功能特性</a> •
-  <a href="#%E4%B8%8B%E8%BD%BD">下载</a> •
-  <a href="#%E6%8A%80%E6%9C%AF%E6%A0%88">技术栈</a> •
-  <a href="#%E5%BC%80%E5%8F%91">开发</a>
+  <a href="#概览">概览</a> •
+  <a href="#功能">功能</a> •
+  <a href="#020-更新">0.2.0 更新</a> •
+  <a href="#下载">下载</a> •
+  <a href="#开发">开发</a> •
+  <a href="#架构">架构</a>
 </p>
 
 ---
 
-**界面截图**
-<img src="imgs/screenshot.png" alt="App Preview" width="800">
+<p align="center">
+  <img src="imgs/screenshot.png" alt="RSS Reader screenshot" width="800">
+</p>
 
-## 为什么选择 RSS Reader？
+## 概览
 
-在一个充斥着订阅服务和云端同步的世界里，**RSS Reader** 采取了不同的方式。它是一款现代桌面应用程序，将您的所有数据严格保留在本地机器上。由 Tauri 和 Rust 提供支持，它速度极快，内存效率高，并深度集成了 AI 以增强您的阅读体验。
+RSS Reader 是一款 Tauri 2 桌面应用，用于阅读 RSS、Atom 和 JSON 订阅源。它使用 SQLite 在本地保存数据，通过条件请求降低订阅更新成本，并提供可选的 AI 摘要、翻译和文章评分流程。
 
-## 功能特性
+应用按原生 macOS 习惯设计：`Command+W` 关闭窗口但应用仍保留在 Dock 中，`Command+Q` 才真正退出应用。
 
-### 阅读 & 订阅管理
-- **通用支持：** 无缝订阅 RSS、Atom 和 JSON 源。
-- **智能同步：** 使用 `ETag` 和 `Last-Modified` 头进行增量同步以节省带宽。
-- **OPML 支持：** 轻松导入和导出您的订阅列表。
-- **沉浸式阅读：** 干净的阅读模式、进度条和动态目录。
-- **媒体优先：** 开箱即用的 YouTube 和 Bilibili 嵌入视频支持。
+## 功能
 
-### AI 集成
-- **智能摘要：** 使用 OpenAI 或 Anthropic API 自动生成文章摘要。
-- **一键翻译：** 无需离开应用即可原生翻译整篇文章。
-- **自动化规则：** 构建强大的 AI 驱动规则（例如：“自动星标 AI 相关性得分 > 80 的文章”）。
+### 阅读和订阅管理
+- 订阅 RSS、Atom 和 JSON 源。
+- 使用 OPML 导入和导出订阅。
+- 浏览所有文章、未读文章、星标文章和收藏文章。
+- 使用订阅、标签和分组组织文章。
+- 使用本地全文搜索查找文章。
+- 使用虚拟列表处理大量文章。
 
-### 桌面原生体验
-- **本地缓存：** 自定义 `rss-media://` 协议可离线安全缓存图像和流媒体视频。
-- **高性能：** 虚拟化列表 (`react-virtuoso`) 轻松处理数千篇文章。
-- **适合高级用户：** 全面的全局键盘快捷键，实现全键盘导航。
-- **主题：** 支持跟随系统模式的深色和浅色主题。
-- **多语言：** 支持阿拉伯语、中文、英语、法语、俄语和西班牙语。
+### 性能和后台任务
+- 在本地保存文章、订阅、规则和设置。
+- 使用 `ETag` 和 `Last-Modified` 跳过未变化的订阅下载。
+- 在 Rust 中以有界并发执行订阅刷新。
+- 主窗口关闭后只保留轻量后台调度器。
+- 无窗口时暂停 UI 重任务和 AI 重任务。
+- 仅在需要时加载正文渲染、清洗、Markdown 解析和代码高亮。
+- 使用有界 `rss-media://` 代理处理需要缓存或 Range 请求的媒体。
+- 视频嵌入只有在用户点击后才加载。
+
+### 可选 AI 工具
+- 配置 OpenAI 或 Anthropic 兼容的 AI profile。
+- 生成单篇文章摘要。
+- 翻译文章内容。
+- 为多篇文章生成批量摘要。
+- 使用自动化规则和 AI 评分分类或突出显示文章。
+- API key 保存在本地应用设置中。
+
+### 桌面体验
+- 原生 macOS 菜单行为，支持关闭、重开、隐藏和退出。
+- 键盘快捷键可在设置中开关。
+- 支持浅色、深色和跟随系统主题。
+- 支持上下文菜单和文章批量操作。
+- 界面支持英语、中文、俄语、西班牙语、法语和阿拉伯语。
+
+## 0.2.0 更新
+
+- 标准 macOS 生命周期：`Command+W` 关闭窗口，`Command+Q` 退出应用。
+- 关闭窗口时销毁 WebView，降低隐藏态资源占用。
+- 后台刷新和清理调度下沉到 Rust。
+- 使用 `ETag` 和 `Last-Modified` 做条件订阅抓取。
+- 延迟加载正文渲染和更轻量的媒体加载。
+- 设置中新增快捷键开关。
+- 修复路由恢复、设置页导航、订阅计数刷新和文章已读状态同步问题。
 
 ## 下载
 
-可以通过 [GitHub Releases](https://github.com/WangJinxin-flab/RSS-Reader/releases) 获取即用型二进制文件。
+可在 [GitHub Releases](https://github.com/JinxinWonderWorld/RSS-Reader/releases) 页面下载可直接使用的版本。
 
-> [!TIP]
-> **更新**
-> 应用程序通过 Tauri 原生支持自动更新。安装后，您将自动收到新版本通知。
-
-## 技术栈
-
-本项目利用现代 Web 和系统语言来提供轻量级的原生应用程序：
-
-- **核心：** [Tauri 2.0](https://v2.tauri.app/) + [Rust](https://www.rust-lang.org/)
-- **前端：** [React 18](https://react.dev/) + [TypeScript](https://www.typescriptlang.org/)
-- **样式：** [Tailwind CSS](https://tailwindcss.com/)
-- **状态管理：** [Zustand](https://docs.pmnd.rs/zustand/)
-- **数据库：** SQLite（通过捆绑的 `rusqlite`）
+当前发布目标是 macOS。Tauri 配置中仍保留 Windows 和 Linux 支持，但当前发布测试以 macOS 为主。
 
 ## 开发
 
-### 前置要求
-- [Node.js](https://nodejs.org/) (v18+)
-- [Rust](https://www.rust-lang.org/tools/install) (v1.70+)
+### 环境要求
+- [Node.js](https://nodejs.org/) 18 或更新版本
+- [Rust](https://www.rust-lang.org/tools/install) 1.70 或更新版本
 
 ### 快速开始
 
 ```bash
-# 1. 克隆仓库
-git clone https://github.com/your-username/rss-reader.git
-cd rss-reader
-
-# 2. 安装前端依赖
+git clone https://github.com/JinxinWonderWorld/RSS-Reader.git
+cd RSS-Reader
 npm install
-
-# 3. 启动开发服务器（前端 + Rust 后端）
 npm run tauri:dev
 ```
 
 ### 常用命令
 
-| 命令 | 描述 |
-|---------|-------------|
-| `npm run tauri:build` | 构建发布版本应用 |
-| `npm run dev`         | 仅运行 Vite 前端（无 Rust 后端） |
-| `npm test`            | 运行前端测试 (Vitest) |
-| `cargo test`          | 运行后端测试 (Rust) |
-| `npm run lint`        | 运行 ESLint |
+| 命令 | 说明 |
+| --- | --- |
+| `npm run dev` | 只运行 Vite 前端 |
+| `npm run build` | 类型检查并构建前端 |
+| `npm run tauri:dev` | 运行完整 Tauri 开发应用 |
+| `npm run tauri:build` | 构建发布应用包 |
+| `npm test -- --run` | 运行前端测试 |
+| `npm run lint` | 运行 ESLint |
+| `cargo test --manifest-path src-tauri/Cargo.toml` | 运行 Rust 测试 |
 
-### 架构概述
-应用程序通过 Tauri 的 IPC (`invoke`) 实现了清晰的关注点分离：
-- `src-tauri/src/db/`: 模块化的 SQLite 操作（订阅、标签、分组、规则）。
-- `src-tauri/src/feed/`: 使用 `feed-rs` 解析订阅源。
-- `src/stores/`: 供全局状态持久化存储的 Zustand store。
-- `src/components/`: 用于 UI 的模块化 React 组件。
+## 架构
+
+- `src-tauri/src/app_runtime.rs`: 运行态、后台调度和清理门控。
+- `src-tauri/src/window_lifecycle.rs`: macOS 窗口关闭、重开和状态恢复。
+- `src-tauri/src/feed/`: 订阅抓取、条件请求和解析。
+- `src-tauri/src/db/`: SQLite schema 和数据访问。
+- `src-tauri/src/media_protocol.rs`: 有界媒体代理和 Range 响应。
+- `src-tauri/src/ai.rs`: AI 摘要、翻译、批量摘要和队列处理。
+- `src/services/runtime.ts`: 前端调用 Rust runtime command 的桥接层。
+- `src/stores/`: 用于订阅、设置、规则、UI 状态和搜索历史的 Zustand store。
+- `src/components/`: React UI 组件和懒加载正文渲染。

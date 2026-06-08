@@ -104,9 +104,8 @@ pub fn query_articles(
                         "(a.published_at < ? OR (a.published_at = ? AND a.id < ?))".to_string(),
                     );
                 } else {
-                    where_clauses.push(
-                        "(published_at < ? OR (published_at = ? AND id < ?))".to_string(),
-                    );
+                    where_clauses
+                        .push("(published_at < ? OR (published_at = ? AND id < ?))".to_string());
                 }
                 params.push(Box::new(ts.to_string()));
                 params.push(Box::new(ts.to_string()));
@@ -155,7 +154,7 @@ pub fn query_articles(
 /// Attach scores to articles in bulk for efficient querying
 pub fn attach_scores_to_articles(
     conn: &Connection,
-    articles: &mut Vec<Article>,
+    articles: &mut [Article],
 ) -> Result<(), String> {
     if articles.is_empty() {
         return Ok(());
@@ -171,8 +170,10 @@ pub fn attach_scores_to_articles(
         placeholders
     );
 
-    let params: Vec<&dyn rusqlite::ToSql> =
-        article_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+    let params: Vec<&dyn rusqlite::ToSql> = article_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::ToSql)
+        .collect();
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
@@ -194,12 +195,8 @@ pub fn attach_scores_to_articles(
         .map_err(|e| e.to_string())?;
 
     for row in rows {
-        if let Ok(score) = row {
-            scores_map
-                .entry(score.article_id)
-                .or_insert_with(Vec::new)
-                .push(score);
-        }
+        let score = row.map_err(|e| e.to_string())?;
+        scores_map.entry(score.article_id).or_default().push(score);
     }
 
     for article in articles.iter_mut() {
@@ -276,8 +273,11 @@ mod tests {
     fn query_articles_sorts_by_specific_rule_score() {
         let conn = setup_test_db();
 
-        conn.execute("INSERT INTO feeds (title, url) VALUES ('Test Feed', 'http://test.com')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO feeds (title, url) VALUES ('Test Feed', 'http://test.com')",
+            [],
+        )
+        .unwrap();
         let feed_id = conn.last_insert_rowid();
 
         conn.execute(
@@ -310,9 +310,15 @@ mod tests {
         )
         .unwrap();
 
-        let articles =
-            query_articles(&conn, ArticleFilter::All, None, Some("score_desc:r1"), None, 10)
-                .unwrap();
+        let articles = query_articles(
+            &conn,
+            ArticleFilter::All,
+            None,
+            Some("score_desc:r1"),
+            None,
+            10,
+        )
+        .unwrap();
 
         assert_eq!(articles.len(), 2);
         assert_eq!(articles[0].id, article_id_2);
@@ -324,8 +330,11 @@ mod tests {
         let conn = setup_test_db();
 
         // Insert a feed
-        conn.execute("INSERT INTO feeds (title, url) VALUES ('Test Feed', 'http://test.com')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO feeds (title, url) VALUES ('Test Feed', 'http://test.com')",
+            [],
+        )
+        .unwrap();
         let feed_id = conn.last_insert_rowid();
 
         // Insert articles
@@ -348,8 +357,11 @@ mod tests {
     fn test_query_articles_unread() {
         let conn = setup_test_db();
 
-        conn.execute("INSERT INTO feeds (title, url) VALUES ('Test Feed', 'http://test.com')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO feeds (title, url) VALUES ('Test Feed', 'http://test.com')",
+            [],
+        )
+        .unwrap();
         let feed_id = conn.last_insert_rowid();
 
         conn.execute(
@@ -373,8 +385,11 @@ mod tests {
     fn test_query_articles_starred() {
         let conn = setup_test_db();
 
-        conn.execute("INSERT INTO feeds (title, url) VALUES ('Test Feed', 'http://test.com')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO feeds (title, url) VALUES ('Test Feed', 'http://test.com')",
+            [],
+        )
+        .unwrap();
         let feed_id = conn.last_insert_rowid();
 
         conn.execute(
@@ -398,8 +413,11 @@ mod tests {
     fn test_query_articles_favorite() {
         let conn = setup_test_db();
 
-        conn.execute("INSERT INTO feeds (title, url) VALUES ('Test Feed', 'http://test.com')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO feeds (title, url) VALUES ('Test Feed', 'http://test.com')",
+            [],
+        )
+        .unwrap();
         let feed_id = conn.last_insert_rowid();
 
         conn.execute(
@@ -413,7 +431,8 @@ mod tests {
         )
         .unwrap();
 
-        let articles = query_articles(&conn, ArticleFilter::Favorite, None, None, None, 10).unwrap();
+        let articles =
+            query_articles(&conn, ArticleFilter::Favorite, None, None, None, 10).unwrap();
         assert_eq!(articles.len(), 1);
         assert_eq!(articles[0].title, "Favorite Article");
         assert!(articles[0].is_favorite);
@@ -423,11 +442,17 @@ mod tests {
     fn test_query_articles_with_feed_id() {
         let conn = setup_test_db();
 
-        conn.execute("INSERT INTO feeds (title, url) VALUES ('Feed 1', 'http://test1.com')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO feeds (title, url) VALUES ('Feed 1', 'http://test1.com')",
+            [],
+        )
+        .unwrap();
         let feed_id1 = conn.last_insert_rowid();
-        conn.execute("INSERT INTO feeds (title, url) VALUES ('Feed 2', 'http://test2.com')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO feeds (title, url) VALUES ('Feed 2', 'http://test2.com')",
+            [],
+        )
+        .unwrap();
         let feed_id2 = conn.last_insert_rowid();
 
         conn.execute(
@@ -441,7 +466,8 @@ mod tests {
         )
         .unwrap();
 
-        let articles = query_articles(&conn, ArticleFilter::All, Some(feed_id1), None, None, 10).unwrap();
+        let articles =
+            query_articles(&conn, ArticleFilter::All, Some(feed_id1), None, None, 10).unwrap();
         assert_eq!(articles.len(), 1);
         assert_eq!(articles[0].title, "Article 1");
     }

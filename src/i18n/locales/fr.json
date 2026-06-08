@@ -181,6 +181,8 @@
   },
   "shortcutSettings": {
     "title": "Raccourcis clavier",
+    "enableShortcuts": "Activer les raccourcis clavier",
+    "enableShortcutsDesc": "Une fois désactivés, les raccourcis clavier ne répondent plus",
     "resetDefaults": "Réinitialiser",
     "nextArticle": "Article suivant",
     "prevArticle": "Article précédent",
@@ -565,6 +567,8 @@
   },
   "videoEmbed": {
     "loadFailed": "Échec du chargement de la vidéo. Veuillez ouvrir le lien original pour regarder.",
+    "clickToLoad": "La vidéo n'est pas chargée par défaut. Cliquez pour créer le lecteur.",
+    "loadVideo": "Charger la vidéo",
     "openOriginal": "Ouvrir la vidéo originale"
   },
   "timeAgo": {

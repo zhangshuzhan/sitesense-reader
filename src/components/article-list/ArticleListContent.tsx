@@ -1,7 +1,7 @@
-import { ReactNode, useRef, useState } from 'react'
+import { ReactNode, useMemo, useRef, useState } from 'react'
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso'
 import { useTranslation } from 'react-i18next'
-import { Article } from '@/types'
+import { Article, Feed } from '@/types'
 import { useFeedStore } from '@/stores/feedStore'
 import { useArticleListShortcuts } from '@/hooks/useArticleListShortcuts'
 import ArticleItem from '@/components/ArticleItem'
@@ -44,6 +44,7 @@ interface ArticleListContentProps {
   onSelectAll: () => void
   onClearSelection: () => void
   setArticles: React.Dispatch<React.SetStateAction<Article[]>>
+  buildArticleLink?: (article: Article) => string
 }
 
 export default function ArticleListContent(props: ArticleListContentProps) {
@@ -74,27 +75,38 @@ export default function ArticleListContent(props: ArticleListContentProps) {
     onSelectArticle,
     onSelectAll,
     onClearSelection,
-    setArticles
+    setArticles,
+    buildArticleLink
   } = props
 
   const feeds = useFeedStore(state => state.feeds)
+  const setFeeds = useFeedStore(state => state.setFeeds)
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const [isAddToGroupOpen, setIsAddToGroupOpen] = useState(false)
   const [isBatchSummaryOpen, setIsBatchSummaryOpen] = useState(false)
+  const feedMap = useMemo(() => new Map(feeds.map(feed => [feed.id, feed])), [feeds])
 
   useArticleListShortcuts(articles, virtuosoRef, basePath)
 
   const { t } = useTranslation()
 
+  const refreshFeeds = async () => {
+    try {
+      const updatedFeeds = await invoke<Feed[]>('get_feeds')
+      setFeeds(updatedFeeds)
+    } catch (error) {
+      console.error('Failed to refresh feed counts:', error)
+    }
+  }
+
   const handleMarkSelectedAsRead = async () => {
     if (selectedArticles.size === 0) return
     try {
-      for (const articleId of selectedArticles) {
-        await invoke('mark_article_read', { id: articleId, isRead: true })
-      }
+      await invoke('mark_articles_read', { ids: Array.from(selectedArticles), isRead: true })
       setArticles(prev => prev.map(a =>
         selectedArticles.has(a.id) ? { ...a, isRead: true } : a
       ))
+      await refreshFeeds()
       onClearSelection()
     } catch (error) {
       console.error('Failed to mark articles as read:', error)
@@ -104,12 +116,11 @@ export default function ArticleListContent(props: ArticleListContentProps) {
   const handleMarkSelectedAsUnread = async () => {
     if (selectedArticles.size === 0) return
     try {
-      for (const articleId of selectedArticles) {
-        await invoke('mark_article_read', { id: articleId, isRead: false })
-      }
+      await invoke('mark_articles_read', { ids: Array.from(selectedArticles), isRead: false })
       setArticles(prev => prev.map(a =>
         selectedArticles.has(a.id) ? { ...a, isRead: false } : a
       ))
+      await refreshFeeds()
       onClearSelection()
     } catch (error) {
       console.error('Failed to mark articles as unread:', error)
@@ -185,18 +196,19 @@ export default function ArticleListContent(props: ArticleListContentProps) {
                 style={{ height: '100%' }}
                 data={articles}
                 endReached={onLoadMore}
-                overscan={200}
+                overscan={96}
+                defaultItemHeight={112}
                 itemContent={(_, article: Article) => {
                   const articleWithFeed = {
                     ...article,
-                    feed: feeds.find(f => f.id === article.feedId) || undefined
+                    feed: feedMap.get(article.feedId) || undefined
                   }
                   return (
                     <ArticleItem
                       article={articleWithFeed}
                       isSelected={selectedArticles.has(article.id)}
                       onSelect={onSelectArticle}
-                      linkTarget={`${basePath}/article/${article.id}`}
+                      linkTarget={buildArticleLink?.(article) ?? `${basePath}/article/${article.id}`}
                     />
                   )
                 }}
