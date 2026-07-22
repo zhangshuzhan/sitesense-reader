@@ -4,7 +4,7 @@ import { Article } from '@/types'
 import { useFeedStore } from '@/stores/feedStore'
 import { useArticleUpdateListener } from './useArticleUpdateListener'
 
-const DEFAULT_PAGE_SIZE = 50
+const DEFAULT_PAGE_SIZE = 10
 
 export interface UseArticleListOptions {
   feedId?: number

@@ -146,3 +146,37 @@ pub fn get_all_tags(conn: State<DbState>) -> Result<Vec<Tag>, String> {
         .map_err(|e| e.to_string())?;
     Ok(tags)
 }
+
+/// Return tags that appear on articles belonging to a specific feed.
+/// Used for WordPress column-as-sub-menu in the sidebar.
+#[tauri::command]
+pub fn get_feed_tags(conn: State<DbState>, feed_id: i64) -> Result<Vec<Tag>, String> {
+    let conn = conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT t.id, t.name, t.created_at
+             FROM tags t
+             JOIN article_tags at ON t.id = at.tag_id
+             JOIN articles a ON a.id = at.article_id
+             WHERE a.feed_id = ?1
+             ORDER BY t.name",
+        )
+        .map_err(|e| e.to_string())?;
+    let tags: Vec<Tag> = stmt
+        .query_map([feed_id], |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    // Exclude only 6-digit stock codes — not column names.
+    let tags: Vec<Tag> = tags.into_iter().filter(|t| {
+        !(t.name.len() == 6 && t.name.chars().all(|c| c.is_ascii_digit()))
+    }).collect();
+    Ok(tags)
+}

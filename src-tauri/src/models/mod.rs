@@ -16,6 +16,12 @@ pub struct Feed {
     pub created_at: String,
     pub updated_at: String,
     pub icon: Option<String>,
+    /// `"rss"` (default) or `"wordpress"` (SiteSense dual-mode source).
+    pub source_type: String,
+    /// Optional WordPress account token for plugin (sitesense) mode. Only present on the
+    /// user's local machine; never sent to our servers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unread_count: Option<i64>,
 }
@@ -62,6 +68,8 @@ pub struct NewFeed {
     pub link: Option<String>,
     pub category: Option<String>,
     pub icon: Option<String>,
+    /// `"rss"` (default) or `"wordpress"` (SiteSense dual-mode source).
+    pub source_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +84,8 @@ pub struct NewArticle {
     pub published_at: Option<String>,
     pub updated_at: Option<String>,
     pub thumbnail: Option<String>,
+    /// WordPress category names, attached as article tags for column/filter support.
+    pub categories: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,4 +132,56 @@ pub struct ArticleScore {
     pub badge_color: Option<String>,
     pub badge_icon: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialInsight {
+    /// Short summary of the article's market/financial takeaway.
+    pub summary: String,
+    /// `"bullish"` | `"bearish"` | `"neutral"`.
+    pub sentiment: String,
+    /// -100 (very bearish) .. 100 (very bullish).
+    pub sentiment_score: i32,
+    /// Detected finance keywords / tickers.
+    pub keywords: Vec<String>,
+    /// `"ai"` (cloud LLM) or `"local"` (heuristic fallback).
+    pub source: String,
+    /// Model id when `source == "ai"`, otherwise `None`.
+    pub model: Option<String>,
+}
+
+/// Eastmoney research report stored locally.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EastmoneyReport {
+    pub id: i64,
+    /// `stock` | `industry` | `macro` | `morning`
+    pub category: String,
+    pub title: String,
+    pub org_name: String,
+    pub org_sname: String,
+    pub stock_name: Option<String>,
+    pub stock_code: Option<String>,
+    pub industry_name: Option<String>,
+    pub publish_date: String,
+    pub info_code: String,
+    pub summary: Option<String>,
+    pub is_read: bool,
+    pub pdf_path: Option<String>,
+    pub created_at: String,
+}
+
+/// Payload for inserting a fetched report.
+pub struct NewEastmoneyReport {
+    pub category: String,
+    pub title: String,
+    pub org_name: String,
+    pub org_sname: String,
+    pub stock_name: Option<String>,
+    pub stock_code: Option<String>,
+    pub industry_name: Option<String>,
+    pub publish_date: String,
+    pub info_code: String,
+    pub summary: Option<String>,
 }

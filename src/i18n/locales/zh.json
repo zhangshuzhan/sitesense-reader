@@ -17,6 +17,7 @@
     "copyUrl": "复制URL",
     "delete": "删除",
     "uncategorized": "未分类",
+    "expandColumns": "展开栏目",
     "copiedToClipboard": "已复制到剪贴板",
     "deleteSuccess": "删除成功",
     "deleteFailed": "删除失败"
@@ -66,8 +67,42 @@
     "exitReadingMode": "退出阅读模式",
     "removeTag": "移除标签",
     "addTagButton": "添加标签",
-    "generateSummary": "生成 AI 摘要"
-  },
+  "generateSummary": "生成 AI 摘要",
+  "viewPrompt": "查看提示词",
+  "promptShort": "提示词",
+  "noPromptConfigured": "未配置 AI 提示词，请在设置中添加 AI 配置文件",
+  "financialInsight": "财经解读",
+  "financeShort": "财经",
+  "financeFailed": "财经解读生成失败",
+  "financeBullish": "看多",
+  "financeBearish": "看空",
+  "financeNeutral": "中性",
+  "financeSourceAi": "AI",
+  "financeSourceLocal": "本地启发式"
+},
+"eastmoney": {
+  "title": "研报",
+  "stock": "上市公司研报",
+  "industry": "行业分析研报",
+  "macro": "宏观策略研报",
+  "morning": "券商晨会",
+  "refresh": "刷新",
+  "collecting": "采集中...",
+  "collected": "已采集",
+  "items": "篇",
+  "upToDate": "已是最新，无新增研报",
+  "collectFailed": "研报采集失败",
+  "clickToCollect": "点击下方按钮开始采集研报",
+  "startCollect": "开始采集",
+  "empty": "暂无研报"
+},
+"marketData": {
+  "sync": "同步行情",
+  "syncing": "同步中...",
+  "countIssue": "股票数量异常",
+  "nullIssue": "较多停牌/无行情",
+  "anomaly": "涨跌幅异常"
+},
   "settings": {
     "title": "设置",
     "subtitle": "自定义你的RSS Reader",
@@ -228,7 +263,19 @@
     "duplicateFeed": "该订阅源已存在，无需重复添加",
     "parseFailed": "无法解析 Feed，请确认 URL 是有效的 RSS/Atom 订阅链接",
     "categoryPlaceholder": "例如：科技、新闻、博客",
-    "hint": "提示：支持RSS、Atom和JSON Feed格式"
+    "hint": "提示：支持RSS、Atom和JSON Feed格式",
+    "sourceRss": "RSS / Atom",
+    "sourceWordPress": "WordPress 站点",
+    "wpBase": "站点地址",
+    "wpBasePlaceholder": "https://www.paomiji.com",
+    "wpToken": "账户 Token（可选）",
+    "wpTokenPlaceholder": "安装 SiteSense 插件后填写 WordPress 账户 Token",
+    "detect": "检测连接",
+    "detecting": "检测中...",
+    "wpReachablePublic": "✓ 可公开访问（无需登录）",
+    "wpReachableAccount": "✓ 需账户 Token 访问",
+    "wpUnreachable": "无法连接，请检查站点地址",
+    "hintWordPress": "支持任意 WordPress 站点：默认读取公开内容；安装 SiteSense 插件并填写 Token 可读取受限内容"
   },
   "editFeed": {
     "title": "编辑订阅源",
@@ -295,8 +342,11 @@
     "deleteSuccess": "配置文件已删除",
     "deleteFailed": "删除失败",
     "deleteConfirm": "确定要删除此配置文件吗？",
-    "openaiCompat": "OpenAI 兼容",
-    "anthropicCompat": "Anthropic 兼容",
+  "openaiCompat": "OpenAI 兼容",
+  "anthropicCompat": "Anthropic 兼容",
+  "preset": "快捷预设",
+  "presetCustom": "自定义（手动填写）",
+  "promptTemplate": "提示词模板",
     "promptNote": "注意：此提示词仅用于文章摘要。AI 翻译功能将使用内置的翻译提示词。",
     "nameAndKeyRequired": "请填写名称和 API Key"
   },
@@ -343,7 +393,7 @@
     "generating": "正在生成AI简报..."
   },
   "articleListContent": {
-    "loadMore": "加载更多...",
+    "loadMore": "下拉获取更多文章",
     "noMore": "没有更多文章了",
     "removedFromGroup": "已从分组中移除",
     "removeFailed": "移除失败"

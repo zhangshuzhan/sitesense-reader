@@ -243,6 +243,7 @@ impl FeedFetcher {
             link: feed.links.first().map(|l| l.href.clone()),
             category: feed.categories.first().map(|c| c.term.clone()),
             icon,
+            source_type: "rss".to_string(),
         };
 
         let articles: Vec<NewArticle> = feed
@@ -263,6 +264,7 @@ impl FeedFetcher {
                     published_at: entry.published.or(entry.updated).map(|p| p.to_rfc3339()),
                     updated_at: entry.updated.map(|u| u.to_rfc3339()),
                     thumbnail,
+                    categories: Vec::new(),
                 })
             })
             .collect();

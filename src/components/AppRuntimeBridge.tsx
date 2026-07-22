@@ -12,7 +12,8 @@ import {
   syncRuntimeSettings,
   syncWindowContext,
 } from '@/services/runtime'
-import { isTauriEnv } from '@/utils/tauri'
+import { isTauriEnv, invoke } from '@/utils/tauri'
+import { toast } from '@/stores/toastStore'
 
 type FeedRefreshPayload = {
   newArticleIds?: number[]
@@ -161,6 +162,17 @@ export default function AppRuntimeBridge() {
       disposed = true
       unlisten?.()
     }
+  }, [])
+
+  // Startup: check if market data needs syncing
+  useEffect(() => {
+    if (!isTauriEnv) return
+    void (async () => {
+      try {
+        const hint = await invoke<string | null>('check_market_status')
+        if (hint) toast.info(hint)
+      } catch { /* ignore */ }
+    })()
   }, [])
 
   return null

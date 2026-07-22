@@ -7,7 +7,7 @@ pub mod rules;
 pub mod rules_engine;
 pub mod tags;
 
-use crate::models::{Article, Feed, NewArticle};
+use crate::models::{Article, EastmoneyReport, Feed, NewArticle};
 use articles::{query_articles, row_to_article, ArticleFilter};
 use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
 use serde::Deserialize;
@@ -120,6 +120,8 @@ pub fn init_database_at_path(db_path: &std::path::Path) -> SqliteResult<Connecti
             last_modified TEXT,
             error_message TEXT,
             icon TEXT,
+            source_type TEXT DEFAULT 'rss',
+            auth_token TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )",
@@ -127,6 +129,8 @@ pub fn init_database_at_path(db_path: &std::path::Path) -> SqliteResult<Connecti
     )?;
 
     let _ = conn.execute("ALTER TABLE feeds ADD COLUMN icon TEXT", []);
+    let _ = conn.execute("ALTER TABLE feeds ADD COLUMN source_type TEXT DEFAULT 'rss'", []);
+    let _ = conn.execute("ALTER TABLE feeds ADD COLUMN auth_token TEXT", []);
     let _ = conn.execute("ALTER TABLE articles ADD COLUMN thumbnail TEXT", []);
 
     conn.execute(
@@ -340,6 +344,76 @@ pub fn init_database_at_path(db_path: &std::path::Path) -> SqliteResult<Connecti
         [],
     )?;
 
+    // SiteSense financial interpretation cache (works with or without a cloud LLM key).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS article_financial_insights (
+            article_id INTEGER PRIMARY KEY,
+            summary TEXT NOT NULL,
+            sentiment TEXT NOT NULL,
+            sentiment_score INTEGER NOT NULL DEFAULT 0,
+            keywords TEXT NOT NULL DEFAULT '[]',
+            source TEXT NOT NULL DEFAULT 'local',
+            model TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    // SiteSense: Eastmoney research reports — deduped by info_code.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS eastmoney_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            org_name TEXT NOT NULL DEFAULT '',
+            org_sname TEXT NOT NULL DEFAULT '',
+            stock_name TEXT,
+            stock_code TEXT,
+            industry_name TEXT,
+            publish_date TEXT NOT NULL,
+            info_code TEXT NOT NULL UNIQUE,
+            summary TEXT,
+            pdf_path TEXT,
+            is_read INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )",
+        [],
+    )?;
+
+    // Migration: add pdf_path column to existing eastmoney_reports tables.
+    let _ = conn.execute("ALTER TABLE eastmoney_reports ADD COLUMN pdf_path TEXT", []);
+
+    // SiteSense: A‑share stock alias lookup table.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS stock_aliases (
+            stock_code TEXT NOT NULL,
+            alias      TEXT NOT NULL,
+            alias_type TEXT NOT NULL DEFAULT 'short',
+            PRIMARY KEY (alias)
+        )",
+        [],
+    )?;
+    let _ = seed_stock_aliases(&conn);
+
+    // SiteSense: local market data (last 5 trading days)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS stock_daily (
+            code        TEXT NOT NULL,
+            name        TEXT NOT NULL DEFAULT '',
+            trade_date  TEXT NOT NULL,
+            open        REAL DEFAULT 0,
+            close       REAL DEFAULT 0,
+            high        REAL DEFAULT 0,
+            low         REAL DEFAULT 0,
+            volume      INTEGER DEFAULT 0,
+            amount      REAL DEFAULT 0,
+            change_pct  REAL DEFAULT 0,
+            PRIMARY KEY (code, trade_date)
+        )",
+        [],
+    )?;
+
     // On startup, reset any tasks that were interrupted mid-processing
     let _ = conn.execute(
         "UPDATE ai_tasks SET status = 'pending', error_msg = NULL WHERE status = 'processing'",
@@ -347,6 +421,18 @@ pub fn init_database_at_path(db_path: &std::path::Path) -> SqliteResult<Connecti
     );
 
     Ok(conn)
+}
+
+#[tauri::command]
+pub fn delete_feed_articles(conn: State<DbState>, feed_id: i64) -> Result<i64, String> {
+    let conn = conn.lock().map_err(|e| e.to_string())?;
+    // Also clean up associated tags and summaries
+    let _ = conn.execute("DELETE FROM article_tags WHERE article_id IN (SELECT id FROM articles WHERE feed_id = ?1)", [feed_id]);
+    let _ = conn.execute("DELETE FROM article_ai_summaries WHERE article_id IN (SELECT id FROM articles WHERE feed_id = ?1)", [feed_id]);
+    let _ = conn.execute("DELETE FROM article_financial_insights WHERE article_id IN (SELECT id FROM articles WHERE feed_id = ?1)", [feed_id]);
+    let count = conn.execute("DELETE FROM articles WHERE feed_id = ?1", [feed_id])
+        .map_err(|e| e.to_string())?;
+    Ok(count as i64)
 }
 
 #[tauri::command]
@@ -805,6 +891,8 @@ struct FeedRefreshJob {
     url: String,
     etag: Option<String>,
     last_modified: Option<String>,
+    source_type: String,
+    auth_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -943,6 +1031,8 @@ fn apply_feed_update_result(
                     );
                 }
 
+                tag_article_with_stocks(conn, article.id, &item.title, &item.content);
+
                 if is_new {
                     outcome.new_articles.push(article);
                 } else if is_updated {
@@ -990,8 +1080,8 @@ pub async fn fetch_and_add_feed(
     let final_category = category.or(new_feed.category);
 
     conn.execute(
-        "INSERT INTO feeds (title, url, description, link, category, icon, etag, last_modified, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO feeds (title, url, description, link, category, icon, source_type, auth_token, etag, last_modified, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             &new_feed.title,
             &new_feed.url,
@@ -999,6 +1089,8 @@ pub async fn fetch_and_add_feed(
             &new_feed.link,
             &final_category,
             &new_feed.icon,
+            &new_feed.source_type,
+            &Option::<String>::None,
             &fetch_result.etag,
             &fetch_result.last_modified,
             &now,
@@ -1048,6 +1140,116 @@ pub async fn fetch_and_add_feed(
         error_message: None,
         created_at: now.clone(),
         updated_at: now,
+        source_type: new_feed.source_type,
+        auth_token: None,
+        unread_count: Some(articles.len() as i64),
+    };
+
+    Ok((feed, articles))
+}
+
+/// SiteSense dual-mode: add a WordPress site as a feed. Tries public core REST first,
+/// then plugin mode (requires an account token). The chosen `mode`/`auth` are stored on
+/// the returned feed so the refresh path knows how to fetch again.
+#[tauri::command]
+pub async fn fetch_and_add_wordpress(
+    conn: State<'_, DbState>,
+    base: String,
+    category: Option<String>,
+    token: Option<String>,
+) -> Result<(Feed, Vec<Article>), String> {
+    let fetcher = crate::wordpress::WordPressFetcher::new()?;
+    let result = fetcher
+        .fetch(
+            &base,
+            crate::wordpress::WordPressFetchOptions {
+                token: token.clone(),
+                per_page: None,
+            },
+        )
+        .await?;
+
+    if !result.reachable {
+        return Err(result
+            .error_message
+            .unwrap_or_else(|| "无法连接该 WordPress 站点".to_string()));
+    }
+
+    let new_feed = result
+        .feed
+        .ok_or_else(|| "Missing feed payload for successful fetch".to_string())?;
+
+    let conn = conn.lock().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let final_category = category.or(new_feed.category);
+
+    conn.execute(
+        "INSERT INTO feeds (title, url, description, link, category, icon, source_type, auth_token, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            &new_feed.title,
+            &new_feed.url,
+            &new_feed.description,
+            &new_feed.link,
+            &final_category,
+            &new_feed.icon,
+            "wordpress",
+            &token,
+            &now,
+            &now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let feed_id = conn.last_insert_rowid();
+
+    let mut articles = Vec::new();
+    for item in result.articles {
+        let created_at = chrono::Utc::now().to_rfc3339();
+        let (article, is_new, _is_updated) =
+            upsert_article_from_feed_item(&conn, feed_id, &item, &created_at)?;
+        attach_categories_as_tags(&conn, article.id, &item.categories);
+        tag_article_with_stocks(
+            &conn,
+            article.id,
+            &item.title,
+            &item.content,
+        );
+
+        let context = rules_engine::RuleTriggerContext {
+            is_existing_article: !is_new,
+            is_new_article: is_new,
+            allow_include_fetched: false,
+        };
+
+        if let Err(e) = rules_engine::process_article_rules_with_context(&conn, &article, context) {
+            eprintln!(
+                "Warning: Failed to process rules for article {}: {}",
+                article.id, e
+            );
+        }
+
+        if is_new {
+            articles.push(article);
+        }
+    }
+
+    let feed = Feed {
+        id: feed_id,
+        title: new_feed.title,
+        description: new_feed.description,
+        url: new_feed.url,
+        link: new_feed.link,
+        category: final_category,
+        icon: new_feed.icon,
+        last_updated: Some(now.clone()),
+        etag: None,
+        last_modified: None,
+        error_message: None,
+        created_at: now.clone(),
+        updated_at: now,
+        source_type: "wordpress".to_string(),
+        auth_token: token,
         unread_count: Some(articles.len() as i64),
     };
 
@@ -1075,7 +1277,7 @@ pub async fn update_feed_with_outcome(
         let conn_clone = conn.lock().map_err(|e| e.to_string())?;
         conn_clone
             .query_row(
-                "SELECT id, url, etag, last_modified FROM feeds WHERE id = ?1",
+                "SELECT id, url, etag, last_modified, source_type, auth_token FROM feeds WHERE id = ?1",
                 [feed_id],
                 |row| {
                     Ok(FeedRefreshJob {
@@ -1083,11 +1285,36 @@ pub async fn update_feed_with_outcome(
                         url: row.get(1)?,
                         etag: row.get(2)?,
                         last_modified: row.get(3)?,
+                        source_type: row.get(4).unwrap_or_else(|_| "rss".to_string()),
+                        auth_token: row.get(5)?,
                     })
                 },
             )
             .map_err(|e| e.to_string())?
     };
+
+    if job.source_type == "wordpress" {
+        let wp_fetcher = crate::wordpress::WordPressFetcher::new()?;
+        let wp_result = wp_fetcher
+            .fetch(
+                &job.url,
+                crate::wordpress::WordPressFetchOptions {
+                    token: job.auth_token.clone(),
+                    per_page: None,
+                },
+            )
+            .await?;
+        let conn = conn.lock().map_err(|e| e.to_string())?;
+        if !wp_result.reachable {
+            conn.execute(
+                "UPDATE feeds SET error_message = ?1 WHERE id = ?2",
+                params![wp_result.error_message.unwrap_or_default(), feed_id],
+            )
+            .ok();
+            return Ok(FeedUpdateOutcome::default());
+        }
+        return apply_wordpress_update_result(&conn, feed_id, wp_result);
+    }
 
     let fetch_result = fetcher
         .fetch_feed(
@@ -1120,7 +1347,7 @@ pub async fn update_all_feeds_with_outcome(
     let jobs: Vec<FeedRefreshJob> = {
         let conn_clone = conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn_clone
-            .prepare("SELECT id, url, etag, last_modified FROM feeds")
+            .prepare("SELECT id, url, etag, last_modified, source_type, auth_token FROM feeds")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -1129,6 +1356,8 @@ pub async fn update_all_feeds_with_outcome(
                     url: row.get(1)?,
                     etag: row.get(2)?,
                     last_modified: row.get(3)?,
+                    source_type: row.get(4).unwrap_or_else(|_| "rss".to_string()),
+                    auth_token: row.get(5)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1138,6 +1367,7 @@ pub async fn update_all_feeds_with_outcome(
     };
 
     let fetcher = crate::feed::FeedFetcher::new()?;
+    let wp_fetcher = crate::wordpress::WordPressFetcher::new()?;
     let mut outcome = FeedUpdateOutcome::default();
 
     for chunk in jobs.chunks(FEED_REFRESH_CONCURRENCY) {
@@ -1145,8 +1375,22 @@ pub async fn update_all_feeds_with_outcome(
 
         for job in chunk.iter().cloned() {
             let fetcher = fetcher.clone();
+            let wp_fetcher = wp_fetcher.clone();
             let rsshub_domain = rsshub_domain.clone();
             join_set.spawn(async move {
+                if job.source_type == "wordpress" {
+                    let result = wp_fetcher
+                        .fetch(
+                            &job.url,
+                            crate::wordpress::WordPressFetchOptions {
+                                token: job.auth_token.clone(),
+                                per_page: None,
+                            },
+                        )
+                        .await;
+                    return (job.id, WordPressJobResult::Wordpress(result));
+                }
+
                 let result = fetcher
                     .fetch_feed(
                         &job.url,
@@ -1157,30 +1401,175 @@ pub async fn update_all_feeds_with_outcome(
                         },
                     )
                     .await;
-                (job.id, result)
+                (job.id, WordPressJobResult::Rss(result))
             });
         }
 
         while let Some(result) = join_set.join_next().await {
-            let (feed_id, fetch_result) = result.map_err(|e| e.to_string())?;
-            match fetch_result {
-                Ok(fetch_result) => {
-                    let conn_lock = conn.lock().map_err(|e| e.to_string())?;
-                    let feed_outcome = apply_feed_update_result(&conn_lock, feed_id, fetch_result)?;
-                    outcome.merge(feed_outcome);
-                }
-                Err(error) => {
-                    let conn_lock = conn.lock().map_err(|e| e.to_string())?;
-                    conn_lock
-                        .execute(
-                            "UPDATE feeds SET error_message = ?1 WHERE id = ?2",
-                            params![error, feed_id],
-                        )
-                        .ok();
+            let (feed_id, job_result) = result.map_err(|e| e.to_string())?;
+            match job_result {
+                WordPressJobResult::Rss(fetch_result) => match fetch_result {
+                    Ok(fetch_result) => {
+                        let conn_lock = conn.lock().map_err(|e| e.to_string())?;
+                        let feed_outcome =
+                            apply_feed_update_result(&conn_lock, feed_id, fetch_result)?;
+                        outcome.merge(feed_outcome);
+                    }
+                    Err(error) => {
+                        let conn_lock = conn.lock().map_err(|e| e.to_string())?;
+                        conn_lock
+                            .execute(
+                                "UPDATE feeds SET error_message = ?1 WHERE id = ?2",
+                                params![error, feed_id],
+                            )
+                            .ok();
+                    }
+                },
+                WordPressJobResult::Wordpress(wp_result) => {
+                    match wp_result {
+                        Ok(wp_result) => {
+                            if !wp_result.reachable {
+                                let conn_lock = conn.lock().map_err(|e| e.to_string())?;
+                                conn_lock
+                                    .execute(
+                                        "UPDATE feeds SET error_message = ?1 WHERE id = ?2",
+                                        params![wp_result.error_message.unwrap_or_default(), feed_id],
+                                    )
+                                    .ok();
+                                continue;
+                            }
+                            let conn_lock = conn.lock().map_err(|e| e.to_string())?;
+                            let feed_outcome =
+                                apply_wordpress_update_result(&conn_lock, feed_id, wp_result)?;
+                            outcome.merge(feed_outcome);
+                        }
+                        Err(error) => {
+                            let conn_lock = conn.lock().map_err(|e| e.to_string())?;
+                            conn_lock
+                                .execute(
+                                    "UPDATE feeds SET error_message = ?1 WHERE id = ?2",
+                                    params![error, feed_id],
+                                )
+                                .ok();
+                        }
+                    }
                 }
             }
         }
     }
+
+    Ok(outcome)
+}
+
+/// Tagged result so the bulk refresh can carry either an RSS or a WordPress fetch outcome
+/// through the same join-set.
+enum WordPressJobResult {
+    Rss(Result<crate::feed::FeedFetchResult, String>),
+    Wordpress(Result<crate::wordpress::WordPressFetchResult, String>),
+}
+
+/// Upsert articles fetched from a WordPress source and refresh the feed's timestamp.
+/// Populate the stock_aliases table with initial A‑share data.
+/// Idempotent — only inserts aliases that don't exist yet.
+fn seed_stock_aliases(conn: &Connection) -> Result<(), String> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM stock_aliases", [], |r| r.get(0)).unwrap_or(0);
+    if count > 0 { return Ok(()); }
+
+    let db = crate::stock_tagger::load_stock_db();
+    for (full_name, (code, short)) in &db.name_to_info {
+        // Full name alias
+        let _ = conn.execute("INSERT OR IGNORE INTO stock_aliases (stock_code, alias, alias_type) VALUES (?1,?2,'full')", [code.as_str(), full_name.as_str()]);
+        // Short label alias
+        let _ = conn.execute("INSERT OR IGNORE INTO stock_aliases (stock_code, alias, alias_type) VALUES (?1,?2,'short')", [code.as_str(), short.as_str()]);
+        // Code alias
+        let _ = conn.execute("INSERT OR IGNORE INTO stock_aliases (stock_code, alias, alias_type) VALUES (?1,?2,'code')", [code.as_str(), code.as_str()]);
+    }
+    Ok(())
+}
+fn attach_categories_as_tags(conn: &Connection, article_id: i64, categories: &[String]) {
+    for cat in categories {
+        if cat.trim().is_empty() {
+            continue;
+        }
+        if conn
+            .execute("INSERT OR IGNORE INTO tags (name) VALUES (?1)", [cat])
+            .is_err()
+        {
+            continue;
+        }
+        if let Ok(tag_id) = conn.query_row("SELECT id FROM tags WHERE name = ?1", [cat], |r| {
+            r.get::<_, i64>(0)
+        }) {
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO article_tags (article_id, tag_id) VALUES (?1, ?2)",
+                [article_id, tag_id],
+            );
+        }
+    }
+}
+
+/// Scan an article against the A‑share stock database and attach matched
+/// stocks as tags. Uses the same algorithm as paomiji.com's Knowledge‑Planet collector.
+fn tag_article_with_stocks(
+    conn: &Connection,
+    article_id: i64,
+    title: &str,
+    content: &Option<String>,
+) {
+    use std::sync::LazyLock;
+    static DB: LazyLock<crate::stock_tagger::StockDb> = LazyLock::new(crate::stock_tagger::load_stock_db);
+    let text = format!("{} {}", title, content.as_deref().unwrap_or(""));
+    let matches = crate::stock_tagger::find_stocks_in_text(&text, &DB);
+    for (code, short, _full) in matches {
+        if conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?1)", [&code]).is_err() { continue; }
+        if let Ok(tag_id) = conn.query_row("SELECT id FROM tags WHERE name = ?1", [&code], |r| r.get::<_,i64>(0)) {
+            let _ = conn.execute("INSERT OR IGNORE INTO article_tags (article_id, tag_id) VALUES (?1,?2)", [article_id, tag_id]);
+        }
+        if conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?1)", [&short]).is_err() { continue; }
+        if let Ok(tag_id) = conn.query_row("SELECT id FROM tags WHERE name = ?1", [&short], |r| r.get::<_,i64>(0)) {
+            let _ = conn.execute("INSERT OR IGNORE INTO article_tags (article_id, tag_id) VALUES (?1,?2)", [article_id, tag_id]);
+        }
+    }
+}
+
+fn apply_wordpress_update_result(
+    conn: &Connection,
+    feed_id: i64,
+    result: crate::wordpress::WordPressFetchResult,
+) -> Result<FeedUpdateOutcome, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut outcome = FeedUpdateOutcome::default();
+
+    for item in result.articles {
+        let created_at = now.clone();
+        let (article, is_new, _is_updated) =
+            upsert_article_from_feed_item(conn, feed_id, &item, &created_at)?;
+        attach_categories_as_tags(conn, article.id, &item.categories);
+
+        let context = rules_engine::RuleTriggerContext {
+            is_existing_article: !is_new,
+            is_new_article: is_new,
+            allow_include_fetched: false,
+        };
+
+        if let Err(error) = rules_engine::process_article_rules_with_context(conn, &article, context)
+        {
+            eprintln!(
+                "Warning: Failed to process rules for WordPress article {}: {}",
+                article.id, error
+            );
+        }
+
+        if is_new {
+            outcome.new_articles.push(article);
+        }
+    }
+
+    conn.execute(
+        "UPDATE feeds SET last_updated = ?1, updated_at = ?2, error_message = NULL WHERE id = ?3",
+        params![now, now, feed_id],
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(outcome)
 }
@@ -1289,6 +1678,396 @@ fn upsert_article_from_feed_item(
     };
 
     Ok((article, true, false))
+}
+
+// ── Eastmoney research report commands (SiteSense) ──
+
+/// Helper: read all known Eastmoney info_codes without borrowing issues.
+fn known_eastmoney_codes(conn: &Connection) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT info_code FROM eastmoney_reports")
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+/// Collect Eastmoney reports for all four categories. Deduplicates by info_code.
+/// Called on app startup and then periodically to fill gaps.
+#[tauri::command]
+pub async fn collect_eastmoney_reports(
+    conn: State<'_, DbState>,
+) -> Result<Vec<EastmoneyReport>, String> {
+    let known = {
+        let c = conn.lock().map_err(|e| e.to_string())?;
+        known_eastmoney_codes(&c)?
+    };
+
+    let fetcher = crate::eastmoney::EastmoneyFetcher::new()?;
+    let today = crate::eastmoney::today_str();
+    let half_year = crate::eastmoney::six_months_ago();
+    let items = fetcher
+        .fetch_all(&known, &half_year, &today)
+        .await
+        .map_err(|e| format!("Eastmoney fetch: {}", e))?;
+
+    let conn = conn.lock().map_err(|e| e.to_string())?;
+    let mut inserted: Vec<EastmoneyReport> = Vec::new();
+    for item in items {
+        let created_at = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR IGNORE INTO eastmoney_reports (category, title, org_name, org_sname, stock_name, stock_code, industry_name, publish_date, info_code, summary, is_read, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11)",
+            rusqlite::params![
+                &item.category,
+                &item.title,
+                &item.org_name,
+                &item.org_sname,
+                &item.stock_name,
+                &item.stock_code,
+                &item.industry_name,
+                &item.publish_date,
+                &item.info_code,
+                &item.summary,
+                &created_at,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let id = conn.last_insert_rowid();
+        inserted.push(EastmoneyReport {
+            id,
+            category: item.category,
+            title: item.title,
+            org_name: item.org_name,
+            org_sname: item.org_sname,
+            stock_name: item.stock_name,
+            stock_code: item.stock_code,
+            industry_name: item.industry_name,
+            publish_date: item.publish_date,
+            info_code: item.info_code,
+            summary: item.summary,
+            is_read: false,
+            pdf_path: None,
+            created_at,
+        });
+    }
+
+    Ok(inserted)
+}
+
+/// List reports by category, sorted newest first.
+#[tauri::command]
+pub fn get_eastmoney_reports(
+    conn: State<'_, DbState>,
+    category: String,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<EastmoneyReport>, String> {
+    let conn = conn.lock().map_err(|e| e.to_string())?;
+    let limit = limit.unwrap_or(100).clamp(1, 500);
+    let offset = offset.unwrap_or(0);
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, category, title, org_name, org_sname, stock_name, stock_code,
+                    industry_name, publish_date, info_code, summary, pdf_path, is_read, created_at
+             FROM eastmoney_reports
+             WHERE category = ?1
+             ORDER BY publish_date DESC, id DESC
+             LIMIT ?2 OFFSET ?3",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![&category, limit, offset], |row| {
+            Ok(EastmoneyReport {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                title: row.get(2)?,
+                org_name: row.get(3)?,
+                org_sname: row.get(4)?,
+                stock_name: row.get(5)?,
+                stock_code: row.get(6)?,
+                industry_name: row.get(7)?,
+                publish_date: row.get(8)?,
+                info_code: row.get(9)?,
+                summary: row.get(10)?,
+                pdf_path: row.get(11)?,
+                is_read: row.get::<_, i32>(12)? != 0,
+                created_at: row.get(13)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// Mark a single report as read.
+#[tauri::command]
+pub fn mark_eastmoney_report_read(conn: State<'_, DbState>, report_id: i64) -> Result<(), String> {
+    let conn = conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE eastmoney_reports SET is_read = 1 WHERE id = ?1",
+        [report_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Return the latest publish_date in a category so the frontend knows what was the
+/// last gap-fill checkpoint.
+#[tauri::command]
+pub fn get_eastmoney_last_date(
+    conn: State<'_, DbState>,
+    category: String,
+) -> Result<Option<String>, String> {
+    let conn = conn.lock().map_err(|e| e.to_string())?;
+    let result: Option<String> = conn
+        .query_row(
+            "SELECT publish_date FROM eastmoney_reports WHERE category = ?1 ORDER BY publish_date DESC LIMIT 1",
+            [&category],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok(result)
+}
+
+/// Helper: get all reports that need PDF downloads.
+fn pending_pdf_reports(conn: &Connection) -> Result<Vec<EastmoneyReport>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, category, title, org_name, org_sname, stock_name, stock_code,
+                    industry_name, publish_date, info_code, summary, pdf_path, is_read, created_at
+             FROM eastmoney_reports WHERE pdf_path IS NULL OR pdf_path = ''",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<EastmoneyReport> = stmt
+        .query_map([], |row| {
+            Ok(EastmoneyReport {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                title: row.get(2)?,
+                org_name: row.get(3)?,
+                org_sname: row.get(4)?,
+                stock_name: row.get(5)?,
+                stock_code: row.get(6)?,
+                industry_name: row.get(7)?,
+                publish_date: row.get(8)?,
+                info_code: row.get(9)?,
+                summary: row.get(10)?,
+                pdf_path: row.get(11)?,
+                is_read: row.get::<_, i32>(12)? != 0,
+                created_at: row.get(13)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+/// Build a human-readable PDF filename following paomiji's scraper naming:
+/// `20260722_600519_贵州茅台_中信证券_AP202607221827258468.pdf`
+/// For industry reports (no stock code): `20260722_电子_中信证券_AP....pdf`
+fn build_report_filename(r: &EastmoneyReport) -> String {
+    let pub_date = r.publish_date.chars().take(10).collect::<String>().replace('-', "");
+    let org = if r.org_sname.is_empty() { &r.org_name } else { &r.org_sname };
+    let org = if org.is_empty() { "NA" } else { org.as_str() };
+    let mut parts: Vec<String> = vec![pub_date];
+    if let Some(sc) = &r.stock_code {
+        if !sc.is_empty() { parts.push(sc.clone()); }
+    }
+    if let Some(sn) = &r.stock_name {
+        if !sn.is_empty() { parts.push(sn.clone()); }
+    }
+    if r.stock_code.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+        if let Some(ind) = &r.industry_name {
+            if !ind.is_empty() { parts.push(ind.clone()); }
+        }
+    }
+    parts.push(org.to_string());
+    parts.push(r.info_code.clone());
+    sanitize_filename(&parts.join("_"))
+}
+
+fn sanitize_filename(name: &str) -> String {
+    let clean: String = name.chars().map(|c| {
+        if matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | ' ') { '_' } else { c }
+    }).collect();
+    let clean = clean.trim().to_string();
+    if clean.len() > 120 { clean[..120].to_string() } else { clean }
+}
+
+/// Download PDFs for Eastmoney reports that don't have one yet.
+#[tauri::command]
+pub async fn download_eastmoney_pdfs(
+    conn: State<'_, DbState>,
+) -> Result<i64, String> {
+    let fetcher = crate::eastmoney::EastmoneyFetcher::new()?;
+    let reports_dir = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("com.jinxin.rssreader")
+        .join("reports");
+
+    let pending = {
+        let c = conn.lock().map_err(|e| e.to_string())?;
+        pending_pdf_reports(&c)?
+    };
+
+    let mut downloaded = 0i64;
+    for report in &pending {
+        let filename = build_report_filename(report);
+        // Folder structure: 个股/{stock_code}/, 行业/{industry}/, 策略/, 晨报/
+        let folder = match report.category.as_str() {
+            "stock" => {
+                let sc = report.stock_code.as_deref().unwrap_or("其他");
+                format!("个股/{}", sanitize_filename(sc))
+            }
+            "industry" => {
+                let ind = report.industry_name.as_deref().unwrap_or("其他");
+                format!("行业/{}", sanitize_filename(ind))
+            }
+            "macro" => "策略".to_string(),
+            "morning" => "晨报".to_string(),
+            _ => "其他".to_string(),
+        };
+        let dest = reports_dir.join(folder).join(&filename);
+        match fetcher
+            .download_pdf_to(&report.info_code, &dest)
+            .await
+        {
+            Ok(pdf_path) => {
+                let conn = conn.lock().map_err(|e| e.to_string())?;
+                let _ = conn.execute(
+                    "UPDATE eastmoney_reports SET pdf_path = ?1 WHERE id = ?2",
+                    rusqlite::params![&pdf_path, report.id],
+                );
+                downloaded += 1;
+            }
+            Err(e) => eprintln!("Eastmoney PDF {}: {}", report.info_code, e),
+        }
+    }
+
+    Ok(downloaded)
+}
+
+/// Download PDFs only for the reports the user selected (by ID).
+#[tauri::command]
+pub async fn download_selected_pdfs(
+    conn: State<'_, DbState>, report_ids: Vec<i64>,
+) -> Result<i64, String> {
+    let fetcher = crate::eastmoney::EastmoneyFetcher::new()?;
+    let reports_dir = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("com.jinxin.rssreader")
+        .join("reports");
+
+    let pending = {
+        let c = conn.lock().map_err(|e| e.to_string())?;
+        pending_pdf_reports(&c)?
+    };
+
+    let mut downloaded = 0i64;
+    for report in &pending {
+        if !report_ids.contains(&report.id) { continue; }
+        let filename = build_report_filename(report);
+        let folder = match report.category.as_str() {
+            "stock" => format!("个股/{}", sanitize_filename(report.stock_code.as_deref().unwrap_or("其他"))),
+            "industry" => format!("行业/{}", sanitize_filename(report.industry_name.as_deref().unwrap_or("其他"))),
+            "macro" => "策略".to_string(),
+            "morning" => "晨报".to_string(),
+            _ => "其他".to_string(),
+        };
+        let dest = reports_dir.join(folder).join(&filename);
+        match fetcher.download_pdf_to(&report.info_code, &dest).await {
+            Ok(pdf_path) => {
+                let conn = conn.lock().map_err(|e| e.to_string())?;
+                let _ = conn.execute("UPDATE eastmoney_reports SET pdf_path = ?1 WHERE id = ?2",
+                    rusqlite::params![&pdf_path, report.id]);
+                downloaded += 1;
+            }
+            Err(e) => eprintln!("Eastmoney PDF {}: {}", report.info_code, e),
+        }
+    }
+    Ok(downloaded)
+}
+
+// ── Market data sync ──
+#[tauri::command]
+pub async fn sync_market_data(
+    conn: State<'_, DbState>,
+) -> Result<crate::market_data::MarketDataCheck, String> {
+    let fetcher = crate::market_data::MarketFetcher::new()?;
+    let bars = fetcher.fetch_today_all().await
+        .map_err(|e| format!("Market fetch: {}", e))?;
+
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let check = crate::market_data::validate_market_data(&bars, &today);
+
+    let conn = conn.lock().map_err(|e| e.to_string())?;
+
+    for bar in &bars {
+        conn.execute(
+            "INSERT OR REPLACE INTO stock_daily (code, name, trade_date, open, close, high, low, volume, amount, change_pct)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            rusqlite::params![
+                &bar.code, &bar.name, &bar.trade_date,
+                bar.open, bar.close, bar.high, bar.low,
+                bar.volume, bar.amount, bar.change_pct,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    // Clean: keep only the latest 5 trading days
+    let days = crate::market_data::recent_trading_days(
+        &chrono::NaiveDate::parse_from_str(&today, "%Y-%m-%d").unwrap_or_else(|_| chrono::NaiveDate::from_ymd_opt(2026,1,1).unwrap()),
+        5,
+    );
+    if let Some(oldest) = days.last() {
+        let cutoff = oldest.format("%Y-%m-%d").to_string();
+        let _ = conn.execute("DELETE FROM stock_daily WHERE trade_date < ?1", [&cutoff]);
+    }
+
+    Ok(check)
+}
+
+/// Quick check: does market data need updating? Returns a hint message or None.
+#[tauri::command]
+pub fn check_market_status(
+    conn: State<'_, DbState>,
+) -> Result<Option<String>, String> {
+    let conn = conn.lock().map_err(|e| e.to_string())?;
+    Ok(crate::market_data::needs_market_sync(&conn))
+}
+
+/// Download PDFs embedded in an article's content and replace URLs with local paths.
+#[tauri::command]
+pub async fn download_article_pdfs(
+    conn: State<'_, DbState>, article_id: i64,
+) -> Result<String, String> {
+    let (content, _content_opt): (String, Option<String>) = {
+        let conn = conn.lock().map_err(|e| e.to_string())?;
+        let content_val: Option<String> = conn.query_row(
+            "SELECT content FROM articles WHERE id = ?1", [article_id],
+            |r| r.get::<_,Option<String>>(0)
+        ).map_err(|e| e.to_string())?;
+        let c = content_val.clone().unwrap_or_default();
+        (c, content_val)
+    };
+    if content.is_empty() { return Ok(content); }
+
+    let pdf_dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."))
+        .join("com.jinxin.rssreader").join("article_pdfs");
+    let downloader = crate::pdf_downloader::PdfDownloader::new(pdf_dir)?;
+    let replacements = downloader.download_embedded_pdfs(&content).await;
+    if replacements.is_empty() { return Ok(content); }
+
+    let new_content = crate::pdf_downloader::replace_pdf_links(&content, &replacements);
+    let conn = conn.lock().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE articles SET content = ?1 WHERE id = ?2",
+        rusqlite::params![&new_content, article_id]).map_err(|e| e.to_string())?;
+    Ok(new_content)
 }
 
 #[cfg(test)]
@@ -1519,6 +2298,7 @@ mod tests {
                     link: Some("https://example.com".to_string()),
                     category: None,
                     icon: None,
+                    source_type: "rss".to_string(),
                 }),
                 articles: vec![NewArticle {
                     feed_id,
@@ -1530,6 +2310,7 @@ mod tests {
                     published_at: None,
                     updated_at: Some("2026-01-01T00:00:00Z".to_string()),
                     thumbnail: None,
+                    categories: Vec::new(),
                 }],
                 etag: None,
                 last_modified: None,

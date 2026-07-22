@@ -1,4 +1,9 @@
 pub mod ai;
 pub mod db;
+pub mod eastmoney;
 pub mod feed;
+pub mod market_data;
 pub mod models;
+pub mod pdf_downloader;
+pub mod stock_tagger;
+pub mod wordpress;

@@ -13,6 +13,7 @@ pub fn get_feeds(conn: State<DbState>) -> Result<Vec<Feed>, String> {
         .prepare(
             "SELECT f.id, f.title, f.url, f.description, f.link, f.category, f.last_updated, f.etag,
                     f.last_modified, f.error_message, f.created_at, f.updated_at, f.icon,
+                    f.source_type, f.auth_token,
                     (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.is_read = 0) as unread_count
              FROM feeds f
              ORDER BY f.created_at DESC",
@@ -35,7 +36,9 @@ pub fn get_feeds(conn: State<DbState>) -> Result<Vec<Feed>, String> {
                 created_at: row.get(10)?,
                 updated_at: row.get(11)?,
                 icon: row.get(12)?,
-                unread_count: Some(row.get::<_, i64>(13)?),
+                source_type: row.get(13).unwrap_or_else(|_| "rss".to_string()),
+                auth_token: row.get(14)?,
+                unread_count: Some(row.get::<_, i64>(15)?),
             })
         })
         .map_err(|e| e.to_string())?
@@ -52,8 +55,8 @@ pub fn add_feed(conn: State<DbState>, feed: NewFeed) -> Result<Feed, String> {
     let now = chrono::Utc::now().to_rfc3339();
 
     conn.execute(
-        "INSERT INTO feeds (title, url, description, link, category, icon, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO feeds (title, url, description, link, category, icon, source_type, auth_token, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             feed.title,
             feed.url,
@@ -61,6 +64,8 @@ pub fn add_feed(conn: State<DbState>, feed: NewFeed) -> Result<Feed, String> {
             feed.link,
             feed.category,
             feed.icon,
+            feed.source_type,
+            Option::<String>::None,
             now,
             now
         ],
@@ -83,6 +88,8 @@ pub fn add_feed(conn: State<DbState>, feed: NewFeed) -> Result<Feed, String> {
         created_at: now.clone(),
         updated_at: now,
         icon: feed.icon,
+        source_type: feed.source_type,
+        auth_token: None,
         unread_count: Some(0),
     })
 }
@@ -105,7 +112,7 @@ pub fn edit_feed(
     .map_err(|e| e.to_string())?;
 
     let mut stmt = conn
-        .prepare("SELECT id, title, url, description, link, category, last_updated, etag, last_modified, error_message, created_at, updated_at, icon FROM feeds WHERE id = ?1")
+        .prepare("SELECT id, title, url, description, link, category, last_updated, etag, last_modified, error_message, created_at, updated_at, icon, source_type, auth_token FROM feeds WHERE id = ?1")
         .map_err(|e| e.to_string())?;
 
     let feed = stmt
@@ -124,6 +131,8 @@ pub fn edit_feed(
                 created_at: row.get(10)?,
                 updated_at: row.get(11)?,
                 icon: row.get(12)?,
+                source_type: row.get(13).unwrap_or_else(|_| "rss".to_string()),
+                auth_token: row.get(14)?,
                 unread_count: None,
             })
         })

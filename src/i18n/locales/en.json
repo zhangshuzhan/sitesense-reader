@@ -17,6 +17,7 @@
     "copyUrl": "Copy URL",
     "delete": "Delete",
     "uncategorized": "Uncategorized",
+  "expandColumns": "Expand columns",
     "copiedToClipboard": "Copied to clipboard",
     "deleteSuccess": "Deleted successfully",
     "deleteFailed": "Delete failed"
@@ -66,8 +67,42 @@
     "exitReadingMode": "Exit Reading Mode",
     "removeTag": "Remove Tag",
     "addTagButton": "Add Tag",
-    "generateSummary": "Generate AI Summary"
-  },
+  "generateSummary": "Generate AI Summary",
+  "viewPrompt": "View Prompt",
+  "promptShort": "Prompt",
+  "noPromptConfigured": "No AI prompt configured. Add an AI profile in Settings.",
+  "financialInsight": "Financial Insight",
+  "financeShort": "Finance",
+  "financeFailed": "Failed to generate financial insight",
+  "financeBullish": "Bullish",
+  "financeBearish": "Bearish",
+  "financeNeutral": "Neutral",
+  "financeSourceAi": "AI",
+  "financeSourceLocal": "Local heuristic"
+},
+"eastmoney": {
+  "title": "Research",
+  "stock": "Stock Reports",
+  "industry": "Industry Reports",
+  "macro": "Macro Strategy",
+  "morning": "Morning Briefs",
+  "refresh": "Refresh",
+  "collecting": "Collecting...",
+  "collected": "Collected",
+  "items": "items",
+  "upToDate": "Already up to date",
+  "collectFailed": "Failed to collect reports",
+  "clickToCollect": "Click the button below to start collecting",
+  "startCollect": "Start Collecting",
+  "empty": "No reports yet"
+},
+"marketData": {
+  "sync": "Sync Market",
+  "syncing": "Syncing...",
+  "countIssue": "Abnormal stock count",
+  "nullIssue": "Many suspended/inactive",
+  "anomaly": "Price anomaly"
+},
   "settings": {
     "title": "Settings",
     "subtitle": "Customize your RSS Reader",
@@ -228,7 +263,19 @@
     "duplicateFeed": "This feed already exists",
     "parseFailed": "Failed to parse feed. Please verify the URL is a valid RSS/Atom feed link",
     "categoryPlaceholder": "e.g., Tech, News, Blog",
-    "hint": "Tip: RSS, Atom, and JSON Feed formats are supported"
+    "hint": "Tip: RSS, Atom, and JSON Feed formats are supported",
+    "sourceRss": "RSS / Atom",
+    "sourceWordPress": "WordPress Site",
+    "wpBase": "Site address",
+    "wpBasePlaceholder": "https://www.paomiji.com",
+    "wpToken": "Account Token (optional)",
+    "wpTokenPlaceholder": "Fill in your WP account token after installing the SiteSense plugin",
+    "detect": "Test connection",
+    "detecting": "Testing...",
+    "wpReachablePublic": "✓ Publicly reachable (no login needed)",
+    "wpReachableAccount": "✓ Reachable with account token",
+    "wpUnreachable": "Cannot connect, please check the site address",
+    "hintWordPress": "Supports any WordPress site: public content by default; install the SiteSense plugin and provide a token for restricted content"
   },
   "editFeed": {
     "title": "Edit Feed",
@@ -295,8 +342,11 @@
     "deleteSuccess": "Profile deleted",
     "deleteFailed": "Delete failed",
     "deleteConfirm": "Are you sure you want to delete this profile?",
-    "openaiCompat": "OpenAI Compatible",
-    "anthropicCompat": "Anthropic Compatible",
+  "openaiCompat": "OpenAI Compatible",
+  "anthropicCompat": "Anthropic Compatible",
+  "preset": "Quick Preset",
+  "presetCustom": "Custom (fill manually)",
+  "promptTemplate": "Prompt Template",
     "promptNote": "Note: This prompt is only used for article summaries. AI translation uses built-in translation prompts.",
     "nameAndKeyRequired": "Please enter name and API Key"
   },
@@ -343,7 +393,7 @@
     "generating": "Generating AI brief..."
   },
   "articleListContent": {
-    "loadMore": "Load more...",
+    "loadMore": "Pull down for more",
     "noMore": "No more articles",
     "removedFromGroup": "Removed from group",
     "removeFailed": "Remove failed"

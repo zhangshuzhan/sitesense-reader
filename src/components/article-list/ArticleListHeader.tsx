@@ -71,21 +71,21 @@ export default function ArticleListHeader({
   const hasRefreshError = !!refreshError && !isLoading
 
   return (
-    <header className="p-6 border-b border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900">
+    <header className="px-6 py-3 border-b border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-900">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           {icon ? (
             icon
           ) : IconComponent ? (
             <div className="p-2 bg-primary-100 dark:bg-primary-900/30 rounded-lg">
-              <IconComponent className="w-6 h-6 text-primary-600 dark:text-primary-400" />
+              <IconComponent className="w-5 h-5 text-primary-600 dark:text-primary-400" />
             </div>
           ) : null}
           <div className="min-w-0">
-            <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight truncate">
+            <h2 className="text-base font-semibold text-slate-900 dark:text-white truncate">
               {title}
             </h2>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+            <p className="text-xs text-slate-500 dark:text-slate-400">
               {subtitle || t('articleListHeader.articleCount', { count: articleCount })}
             </p>
           </div>

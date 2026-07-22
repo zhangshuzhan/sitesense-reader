@@ -1,5 +1,5 @@
 use crate::db::{articles::row_to_article, rules_engine, DbState};
-use crate::models::{Article, Rule};
+use crate::models::{Article, FinancialInsight, Rule};
 use reqwest::Client;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -644,6 +644,285 @@ pub async fn run_ai_queue(
     })
 }
 
+/// System prompt for the financial interpretation. Instructs the model to return a single
+/// JSON object so we can parse it deterministically.
+const FINANCIAL_SYSTEM_PROMPT: &str = "你是一名专业的财经/市场分析师。请阅读用户提供的文章内容，提取其财经与市场观点，并以 JSON 格式返回，不要包含任何额外说明文字。JSON 结构必须如下：\n{\n  \"summary\": \"用 2-4 句话概括文章核心财经观点及其对市场/资产的影响\",\n  \"sentiment\": \"bullish | bearish | neutral\",\n  \"sentimentScore\": -100 到 100 之间的整数，表示多空情绪强度,\n  \"keywords\": [\"关键词1\", \"关键词2\"]\n}\n若文章与财经/市场无关，sentiment 设为 neutral，sentimentScore 设为 0，keywords 留空数组。summary 与 keywords 请使用与原文相同的语言。";
+
+/// Generate a financial interpretation for an article. Uses the user's cloud LLM profile
+/// when a key is present; otherwise falls back to the built-in local heuristic so the
+/// feature works fully offline.
+#[tauri::command]
+pub async fn generate_financial_insight(
+    article_id: i64,
+    profile: AiProfilePayload,
+    state: State<'_, DbState>,
+) -> Result<FinancialInsight, String> {
+    let content = {
+        let conn = state.lock().map_err(|e| e.to_string())?;
+        let article = query_article(&conn, article_id)?;
+        article
+            .content
+            .or(article.summary)
+            .unwrap_or_else(|| article.title.clone())
+    };
+    let title = {
+        let conn = state.lock().map_err(|e| e.to_string())?;
+        query_article(&conn, article_id)?.title
+    };
+
+    let insight = if profile.api_key.trim().is_empty() {
+        financial_insight_local(&title, &content)
+    } else {
+        let client = build_ai_client()?;
+        let prompt = truncate_for_tokens(&content, 4000);
+        match call_ai_api(
+            &client,
+            &profile,
+            FINANCIAL_SYSTEM_PROMPT,
+            &prompt,
+            1024,
+        )
+        .await
+        {
+            Ok(response) => parse_financial_response(&response, &title, &content, &profile.model),
+            Err(_) => financial_insight_local(&title, &content),
+        }
+    };
+
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    let keywords_json = serde_json::to_string(&insight.keywords).unwrap_or_else(|_| "[]".to_string());
+    conn.execute(
+        "INSERT OR REPLACE INTO article_financial_insights (article_id, summary, sentiment, sentiment_score, keywords, source, model, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            article_id,
+            &insight.summary,
+            &insight.sentiment,
+            insight.sentiment_score,
+            keywords_json,
+            &insight.source,
+            &insight.model,
+            chrono::Utc::now().to_rfc3339()
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(insight)
+}
+
+/// Read a previously generated financial insight from the local cache.
+#[tauri::command]
+pub fn get_article_financial_insight(
+    article_id: i64,
+    state: State<'_, DbState>,
+) -> Result<Option<FinancialInsight>, String> {
+    let conn = state.lock().map_err(|e| e.to_string())?;
+    let result = conn
+        .query_row(
+            "SELECT summary, sentiment, sentiment_score, keywords, source, model
+             FROM article_financial_insights WHERE article_id = ?1",
+            [article_id],
+            |row| {
+                let keywords_raw: String = row.get(3)?;
+                let keywords: Vec<String> = serde_json::from_str(&keywords_raw).unwrap_or_default();
+                Ok(FinancialInsight {
+                    summary: row.get(0)?,
+                    sentiment: row.get(1)?,
+                    sentiment_score: row.get(2)?,
+                    keywords,
+                    source: row.get(4)?,
+                    model: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+/// Parse a cloud-LLM JSON response into a [`FinancialInsight`], falling back to the local
+/// heuristic for any field the model omitted.
+fn parse_financial_response(
+    response: &str,
+    title: &str,
+    content: &str,
+    model: &str,
+) -> FinancialInsight {
+    let fallback = financial_insight_local(title, content);
+    let parsed = match extract_json_object(response) {
+        Ok(value) => value,
+        Err(_) => return fallback,
+    };
+
+    let summary = parsed
+        .get("summary")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or(fallback.summary);
+
+    let sentiment = normalize_sentiment(
+        parsed
+            .get("sentiment")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
+
+    let sentiment_score = parsed
+        .get("sentimentScore")
+        .and_then(Value::as_i64)
+        .or_else(|| parsed.get("sentiment_score").and_then(Value::as_i64))
+        .map(|v| v.clamp(-100, 100) as i32)
+        .unwrap_or_else(|| sentiment_score_from_label(&sentiment));
+
+    let keywords = parsed
+        .get("keywords")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.to_string())
+                .filter(|s| !s.trim().is_empty())
+                .collect::<Vec<String>>()
+        })
+        .filter(|v| !v.is_empty())
+        .unwrap_or(fallback.keywords);
+
+    FinancialInsight {
+        summary,
+        sentiment,
+        sentiment_score,
+        keywords,
+        source: "ai".to_string(),
+        model: Some(model.to_string()),
+    }
+}
+
+fn normalize_sentiment(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("bull") || lower.contains("看多") || lower.contains("利多") || lower.contains("利好")
+    {
+        "bullish".to_string()
+    } else if lower.contains("bear") || lower.contains("看空") || lower.contains("利空")
+        || lower.contains("空")
+    {
+        "bearish".to_string()
+    } else {
+        "neutral".to_string()
+    }
+}
+
+fn sentiment_score_from_label(label: &str) -> i32 {
+    match label {
+        "bullish" => 40,
+        "bearish" => -40,
+        _ => 0,
+    }
+}
+
+fn clamp_i32(value: i32, lo: i32, hi: i32) -> i32 {
+    value.max(lo).min(hi)
+}
+
+/// Strip HTML tags and decode the most common entities, collapsing whitespace.
+fn strip_html(input: &str) -> String {
+    let tag_re = regex::Regex::new(r"<[^>]+>").unwrap();
+    let no_tags = tag_re.replace_all(input, " ");
+    let decoded = no_tags
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ");
+    let ws_re = regex::Regex::new(r"\s+").unwrap();
+    ws_re.replace_all(&decoded, " ").trim().to_string()
+}
+
+fn first_sentences(text: &str, max_sentences: usize, max_chars: usize) -> String {
+    let cleaned = if text.contains('<') {
+        strip_html(text)
+    } else {
+        text.to_string()
+    };
+    let mut sentences: Vec<String> = cleaned
+        .split(|c| c == '。' || c == '！' || c == '？' || c == '.' || c == '!' || c == '?' || c == '\n')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if sentences.is_empty() {
+        return cleaned.chars().take(max_chars).collect();
+    }
+    if sentences.len() > max_sentences {
+        sentences.truncate(max_sentences);
+    }
+    let joined = sentences.join("。");
+    if joined.chars().count() > max_chars {
+        joined.chars().take(max_chars).collect()
+    } else {
+        joined
+    }
+}
+
+/// Local, offline heuristic used when no LLM key is configured (or the API call fails).
+fn financial_insight_local(title: &str, content: &str) -> FinancialInsight {
+    let text = format!("{}\n{}", title, content);
+    let cleaned = strip_html(&text);
+
+    let bullish = [
+        "涨", "上涨", "拉升", "冲高", "突破", "创新高", "新高", "利好", "看多", "买入", "加仓",
+        "反弹", "走强", "牛市", "回暖", "复苏", "超预期", "大增", "飙升", "大涨", "上行", "乐观",
+        "bull", "rally", "breakout", "surge", "gain", "buy", "long", "bullish", "soar", "jump",
+        "rise",
+    ];
+    let bearish = [
+        "跌", "下跌", "下挫", "回落", "回调", "利空", "看空", "卖出", "减仓", "走弱", "熊市", "暴跌",
+        "大跌", "下滑", "萎缩", "不及预期", "风险", "重挫", "下探", "悲观", "bear", "crash", "drop",
+        "fall", "down", "sell", "short", "bearish", "slump", "plunge", "decline", "tumble",
+    ];
+
+    let lower = cleaned.to_lowercase();
+    let bull_count = bullish.iter().filter(|w| lower.contains(&w.to_lowercase())).count() as i32;
+    let bear_count = bearish.iter().filter(|w| lower.contains(&w.to_lowercase())).count() as i32;
+
+    let raw = bull_count - bear_count;
+    let sentiment = if raw > 0 {
+        "bullish"
+    } else if raw < 0 {
+        "bearish"
+    } else {
+        "neutral"
+    }
+    .to_string();
+    let sentiment_score = clamp_i32(raw * 8, -100, 100);
+
+    let lexicon = [
+        "美联储", "央行", "降息", "加息", "利率", "通胀", "GDP", "非农", "就业", "汇率", "黄金", "原油",
+        "比特币", "A股", "港股", "美股", "财报", "ETF", "基金", "债券", "期货", "期权", "散户", "机构",
+        "成交量", "市值", "分红", "IPO", "并购", "新能源", "半导体", "人工智能", "房地产",
+    ];
+    let keywords: Vec<String> = lexicon
+        .iter()
+        .filter(|w| cleaned.contains(*w))
+        .map(|s| s.to_string())
+        .collect();
+
+    let summary = if content.trim().is_empty() {
+        title.to_string()
+    } else {
+        first_sentences(content, 3, 280)
+    };
+
+    FinancialInsight {
+        summary,
+        sentiment,
+        sentiment_score,
+        keywords,
+        source: "local".to_string(),
+        model: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -674,5 +953,83 @@ mod tests {
 
         assert!(claim_pending_ai_task(&conn, "task-1").unwrap());
         assert!(!claim_pending_ai_task(&conn, "task-1").unwrap());
+    }
+
+    #[test]
+    fn financial_insight_local_detects_bullish() {
+        let insight = financial_insight_local(
+            "科技股大涨",
+            "今日人工智能板块强势反弹，半导体龙头突破新高，机构看多加仓，市场情绪乐观。",
+        );
+        assert_eq!(insight.sentiment, "bullish");
+        assert!(insight.sentiment_score > 0, "score should be positive");
+        assert_eq!(insight.source, "local");
+        assert!(!insight.keywords.is_empty());
+    }
+
+    #[test]
+    fn financial_insight_local_detects_bearish() {
+        let insight = financial_insight_local(
+            "油价暴跌",
+            "原油价格大幅下挫，能源股走弱，机构看空减仓，市场情绪悲观，风险升温。",
+        );
+        assert_eq!(insight.sentiment, "bearish");
+        assert!(insight.sentiment_score < 0, "score should be negative");
+    }
+
+    #[test]
+    fn financial_insight_local_neutral_when_unrelated() {
+        let insight = financial_insight_local("今日天气晴朗", "阳光明媚，适合外出散步。");
+        assert_eq!(insight.sentiment, "neutral");
+        assert_eq!(insight.sentiment_score, 0);
+    }
+
+    #[test]
+    fn financial_insight_local_extracts_finance_keywords() {
+        let insight = financial_insight_local(
+            "美联储降息预期",
+            "市场关注美联储利率决议，通胀数据与GDP表现将影响降息节奏，黄金与比特币波动加大。",
+        );
+        for kw in ["美联储", "降息", "利率", "通胀", "GDP", "黄金", "比特币"] {
+            assert!(
+                insight.keywords.iter().any(|k| k == kw),
+                "expected keyword {} in {:?}",
+                kw,
+                insight.keywords
+            );
+        }
+    }
+
+    #[test]
+    fn parse_financial_response_handles_markdown_fence() {
+        let model = "gpt-4o";
+        let raw = "```json\n{\"summary\":\"利好兑现\",\"sentiment\":\"bullish\",\"sentimentScore\":75,\"keywords\":[\"半导体\",\"AI\"]}\n```";
+        let insight = parse_financial_response(raw, "标题", "正文", model);
+        assert_eq!(insight.sentiment, "bullish");
+        assert_eq!(insight.sentiment_score, 75);
+        assert_eq!(insight.source, "ai");
+        assert_eq!(insight.model.as_deref(), Some(model));
+        assert_eq!(insight.keywords, vec!["半导体".to_string(), "AI".to_string()]);
+    }
+
+    #[test]
+    fn parse_financial_response_falls_back_on_garbage() {
+        let insight = parse_financial_response("完全不是 JSON 的胡言乱语", "看空标题", "股价暴跌风险加剧", "");
+        assert_eq!(insight.source, "local");
+    }
+
+    #[test]
+    fn strip_html_removes_tags_and_decodes_entities() {
+        let cleaned = strip_html("<p>涨幅&nbsp;超&nbsp;10%</p><div>利好 &amp; 机会</div>");
+        assert!(!cleaned.contains('<'));
+        assert!(cleaned.contains("10"));
+        assert!(cleaned.contains('&'));
+    }
+
+    #[test]
+    fn normalize_sentiment_handles_chinese_and_english() {
+        assert_eq!(normalize_sentiment("看多"), "bullish");
+        assert_eq!(normalize_sentiment("Bearish"), "bearish");
+        assert_eq!(normalize_sentiment("无关"), "neutral");
     }
 }

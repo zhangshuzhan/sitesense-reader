@@ -20,6 +20,7 @@ import AppRuntimeBridge from './components/AppRuntimeBridge'
 const ArticleView = lazy(() => import('./components/ArticleView'))
 const SearchResults = lazy(() => import('./pages/SearchResults'))
 const Settings = lazy(() => import('./pages/Settings'))
+const EastmoneyReportsPanel = lazy(() => import('./components/EastmoneyReportsPanel'))
 
 function RouteFallback() {
   return <div className="h-full bg-white dark:bg-slate-900" />
@@ -125,6 +126,15 @@ export function AppRoutes() {
             }
           />
         </Route>
+
+        <Route
+          path="eastmoney/:category"
+          element={
+            <LazyElement>
+              <EastmoneyReportsPanel />
+            </LazyElement>
+          }
+        />
 
         <Route
           path="search"

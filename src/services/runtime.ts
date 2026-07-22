@@ -2,7 +2,7 @@ import { invoke, isTauriEnv } from '@/utils/tauri'
 import { useAiTaskUiStore } from '@/stores/aiTaskUiStore'
 import { useFeedStore } from '@/stores/feedStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import type { AIProfile, Article } from '@/types'
+import type { AIProfile, Article, EastmoneyReport, Feed, FinancialInsight, MarketDataCheck, WordPressProbe } from '@/types'
 import type { AiTask } from '@/types/rule'
 
 type RuntimeSettingsPayload = {
@@ -198,6 +198,40 @@ export async function processNewArticles(articleIds: number[]) {
   await runAiQueueForeground()
 }
 
+// ---- SiteSense: WordPress dual-mode + financial interpretation ----
+
+export async function fetchAndAddWordPress(
+  base: string,
+  category: string | null,
+  token?: string
+): Promise<{ feed: Feed; articles: Article[] }> {
+  return invoke('fetch_and_add_wordpress', {
+    base,
+    category,
+    token: token || null,
+  })
+}
+
+export async function detectWordPress(base: string, token?: string): Promise<WordPressProbe> {
+  return invoke('detect_wordpress', { base, token: token || null })
+}
+
+export async function generateFinancialInsight(
+  articleId: number,
+  profile: AIProfile
+): Promise<FinancialInsight> {
+  return invoke('generate_financial_insight', {
+    articleId,
+    profile: toProfilePayload(profile),
+  })
+}
+
+export async function getArticleFinancialInsight(
+  articleId: number
+): Promise<FinancialInsight | null> {
+  return invoke('get_article_financial_insight', { articleId })
+}
+
 export async function runAiQueueForeground() {
   if (!isTauriEnv) return
   if (aiQueuePromise) return aiQueuePromise
@@ -243,4 +277,39 @@ export async function runAiQueueForeground() {
   })
 
   return aiQueuePromise
+}
+
+// ── Eastmoney research report commands (SiteSense) ──
+
+export async function collectEastmoneyReports(): Promise<EastmoneyReport[]> {
+  return invoke('collect_eastmoney_reports')
+}
+
+export async function getEastmoneyReports(
+  category: string,
+  limit?: number,
+  offset?: number
+): Promise<EastmoneyReport[]> {
+  return invoke('get_eastmoney_reports', { category, limit: limit ?? 100, offset: offset ?? 0 })
+}
+
+export async function markEastmoneyReportRead(reportId: number): Promise<void> {
+  return invoke('mark_eastmoney_report_read', { reportId })
+}
+
+export async function getEastmoneyLastDate(category: string): Promise<string | null> {
+  return invoke('get_eastmoney_last_date', { category })
+}
+
+export async function downloadEastmoneyPdfs(): Promise<number> {
+  return invoke('download_eastmoney_pdfs')
+}
+
+export async function downloadSelectedPdfs(reportIds: number[]): Promise<number> {
+  return invoke('download_selected_pdfs', { reportIds })
+}
+
+// ── Market data sync ──
+export async function syncMarketData(): Promise<MarketDataCheck> {
+  return invoke('sync_market_data')
 }

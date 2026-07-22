@@ -120,19 +120,13 @@ export default function ArticleItem({ article, isSelected, onSelect, linkTarget 
           <div className="flex-1 min-w-0 flex flex-col gap-2">
             <div className="flex gap-4">
               <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-                <h3 className={`text-base font-semibold leading-snug line-clamp-2 ${
+                <h3 className={`text-sm font-medium leading-snug line-clamp-2 ${
                   !article.isRead
                     ? 'text-slate-900 dark:text-white'
                     : 'text-slate-600 dark:text-slate-400'
                 }`}>
                   {article.title}
                 </h3>
-
-                {article.summary && (
-                  <p className="text-sm text-slate-500 dark:text-slate-400 line-clamp-2">
-                    {article.summary.replace(/<[^>]*>/g, '')}
-                  </p>
-                )}
               </div>
 
               {imageUrl && !hideImage && (
@@ -186,11 +180,6 @@ export default function ArticleItem({ article, isSelected, onSelect, linkTarget 
                   {formatRelativeTime(article.publishedAt)}
                 </span>
               </div>
-              {article.feed?.title && (
-                <span className="text-xs text-slate-400 dark:text-slate-500 max-w-[120px] truncate">
-                  {article.feed.title}
-                </span>
-              )}
             </div>
           </div>
         </div>

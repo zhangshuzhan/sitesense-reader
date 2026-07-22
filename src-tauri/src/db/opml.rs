@@ -10,7 +10,7 @@ pub fn export_opml(conn: State<DbState>) -> Result<String, String> {
     let conn = conn.lock().map_err(|e| e.to_string())?;
 
     let feeds: Vec<Feed> = conn
-        .prepare("SELECT id, url, title, description, link, category, last_updated, created_at, updated_at, etag, last_modified, error_message, icon FROM feeds ORDER BY title")
+        .prepare("SELECT id, url, title, description, link, category, last_updated, created_at, updated_at, etag, last_modified, error_message, icon, source_type, auth_token FROM feeds ORDER BY title")
         .map_err(|e| e.to_string())?
         .query_map([], |row| {
             Ok(Feed {
@@ -27,6 +27,8 @@ pub fn export_opml(conn: State<DbState>) -> Result<String, String> {
                 last_modified: row.get(10)?,
                 error_message: row.get(11)?,
                 icon: row.get(12)?,
+                source_type: row.get(13).unwrap_or_else(|_| "rss".to_string()),
+                auth_token: row.get(14)?,
                 unread_count: None,
             })
         })

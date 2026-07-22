@@ -11,9 +11,10 @@ use app_runtime::{background_scheduler, run_cleanup_if_needed, AppRuntime, AppRu
 use rss_reader::db::{get_legacy_db_paths, init_database_at_path};
 use tauri::{Manager, RunEvent};
 use window_lifecycle::{
-    ensure_main_window, load_saved_window_state, restore_and_show_main_window, save_window_state,
-    MAIN_WINDOW_LABEL,
+    load_saved_window_state, restore_and_show_main_window, save_window_state, MAIN_WINDOW_LABEL,
 };
+#[cfg(target_os = "macos")]
+use window_lifecycle::ensure_main_window;
 
 fn init_database(app: &mut tauri::App) -> Result<(), String> {
     let data_dir = app

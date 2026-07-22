@@ -5,7 +5,9 @@ import { useTranslation } from 'react-i18next'
 import type { DOMNode, Element, HTMLReactParserOptions } from 'html-react-parser'
 
 import { translateArticle, estimateTokens } from '@/services/ai'
-import { generateSummaryForArticle } from '@/services/runtime'
+import {
+  generateSummaryForArticle,
+} from '@/services/runtime'
 import { useFeedStore } from '@/stores/feedStore'
 import { useSettingsStore, defaultShortcuts } from '@/stores/settingsStore'
 import { AiUiTask, useAiTaskUiStore } from '@/stores/aiTaskUiStore'
@@ -18,7 +20,12 @@ import { shouldProxyMediaUrl } from '@/utils/mediaProxy'
 import { formatDate } from '@/utils'
 import { invoke, isTauriEnv } from '@/utils/tauri'
 
-import type { Article, ArticleNavigationContext, ArticleScore, Tag } from '@/types'
+import type {
+  Article,
+  ArticleNavigationContext,
+  ArticleScore,
+  Tag,
+} from '@/types'
 
 import CodeBlock from './CodeBlock'
 import LazyHtmlContent, { loadHtmlParser } from './LazyHtmlContent'
@@ -34,6 +41,7 @@ import {
   ExternalLink,
   Languages,
   List,
+  MessageSquare,
   Plus,
   Sparkles,
   Star,
@@ -968,6 +976,23 @@ export default function ArticleView() {
             >
               <Sparkles className="w-5 h-5" />
               <span className="text-xs font-bold">AI</span>
+            </button>
+
+            {/* 提示词: show the current AI profile's system prompt */}
+            <button
+              onClick={() => {
+                const settings = useSettingsStore.getState()
+                const profile = settings.aiProfiles.find(
+                  (p) => p.id === settings.featureMapping.summaryProfileId
+                ) || settings.aiProfiles.find((p) => p.apiKey)
+                const promptText = profile?.prompt || t('articleView.noPromptConfigured')
+                toast.info(promptText.slice(0, 300))
+              }}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg transition-all duration-200 cursor-pointer text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              title={t('articleView.viewPrompt')}
+            >
+              <MessageSquare className="w-5 h-5" />
+              <span className="text-xs font-bold">{t('articleView.promptShort')}</span>
             </button>
 
             <button

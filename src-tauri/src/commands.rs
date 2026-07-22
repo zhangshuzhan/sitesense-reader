@@ -2,8 +2,32 @@ use std::process::Command;
 
 use rss_reader::ai;
 use rss_reader::db;
+use rss_reader::wordpress;
 
 use crate::media_protocol;
+
+#[tauri::command]
+fn read_local_file(path: String) -> Result<String, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("read: {}", e))?;
+    Ok(hex::encode(bytes))
+}
+
+#[tauri::command]
+fn open_local_file(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer").arg(&path).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(&path).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open").arg(&path).spawn().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
@@ -44,6 +68,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
     tauri::generate_handler![
         media_protocol::cache_media,
         open_external_url,
+        read_local_file,
+        open_local_file,
         crate::app_runtime::sync_runtime_settings,
         crate::app_runtime::sync_window_context,
         crate::app_runtime::get_window_restore_context,
@@ -54,6 +80,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         ai::translate_content,
         ai::batch_generate_summary,
         ai::run_ai_queue,
+        ai::generate_financial_insight,
+        ai::get_article_financial_insight,
         db::feeds::get_feeds,
         db::feeds::add_feed,
         db::feeds::edit_feed,
@@ -75,12 +103,15 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         db::upsert_article_ai_summary,
         db::search_articles,
         db::fetch_and_add_feed,
+        db::fetch_and_add_wordpress,
+        wordpress::detect_wordpress,
         db::opml::import_opml,
         db::opml::export_opml,
         db::export_data,
         db::tags::add_tag,
         db::tags::remove_tag,
         db::tags::get_article_tags,
+        db::tags::get_feed_tags,
         db::tags::get_articles_by_tag,
         db::tags::get_all_tags,
         db::groups::create_group,
@@ -88,6 +119,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         db::groups::rename_group,
         db::groups::add_article_to_group,
         db::groups::remove_article_from_group,
+        db::delete_feed_articles,
         db::delete_article,
         db::groups::get_groups,
         db::groups::get_group_articles,
@@ -105,5 +137,14 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         db::rules::execute_rule_actions,
         db::rules::save_article_score,
         db::rules::get_article_scores,
+        db::collect_eastmoney_reports,
+        db::download_eastmoney_pdfs,
+        db::download_selected_pdfs,
+        db::sync_market_data,
+        db::check_market_status,
+        db::download_article_pdfs,
+        db::get_eastmoney_reports,
+        db::mark_eastmoney_report_read,
+        db::get_eastmoney_last_date,
     ]
 }

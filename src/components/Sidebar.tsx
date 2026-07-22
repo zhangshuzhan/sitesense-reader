@@ -31,7 +31,9 @@ import {
   ChevronRight,
   Tag as TagIcon,
   PanelLeftClose,
-  PanelLeftOpen
+  PanelLeftOpen,
+  FileText,
+  BarChart3,
 } from 'lucide-react'
 
 const FeedIcon = ({ feed }: { feed: Feed }) => {
@@ -64,18 +66,67 @@ export default function Sidebar() {
   const deleteFeed = useFeedStore(state => state.deleteFeed)
   const sidebarCollapsed = useSettingsStore(state => state.sidebarCollapsed)
   const setSidebarCollapsed = useSettingsStore(state => state.setSidebarCollapsed)
-  const [tags, setTags] = useState<Tag[]>([])
   const [isAddFeedOpen, setIsAddFeedOpen] = useState(false)
   const [editingFeed, setEditingFeed] = useState<Feed | null>(null)
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
+  const [expandedFeeds, setExpandedFeeds] = useState<Record<number, boolean>>({})
+  const [feedTags, setFeedTags] = useState<Record<number, Tag[]>>({})
   const location = useLocation()
   const navigate = useNavigate()
   const { showMenu } = useContextMenu()
+
+  const handleSyncMarket = async () => {
+    try {
+      const result = await invoke<{success: boolean; stockCount: number; latestDate: string}>('sync_market_data')
+      if (result.success) {
+        toast.success(`${result.latestDate} · ${result.stockCount} 只`)
+      } else {
+        toast.warning(`行情异常: ${result.stockCount} 只`)
+      }
+    } catch (e: any) {
+      toast.error('行情同步失败')
+    }
+  }
+
+  const toggleFeedExpand = async (feedId: number) => {
+    const currently = expandedFeeds[feedId]
+    if (!currently && !feedTags[feedId]) {
+      try {
+        const ftags = await invoke<Tag[]>('get_feed_tags', { feedId })
+        setFeedTags((prev) => ({ ...prev, [feedId]: ftags }))
+        // Auto-expand if tags were found
+        if (ftags.length > 0) {
+          setExpandedFeeds((prev) => ({ ...prev, [feedId]: true }))
+          return;
+        }
+      } catch {
+        // silently ignore
+      }
+    }
+    setExpandedFeeds((prev) => ({ ...prev, [feedId]: !currently }))
+  }
+
+  // Auto-load WP feed column tags on mount
+  useEffect(() => {
+    if (!isTauriEnv || feeds.length === 0) return
+    const wpFeeds = feeds.filter((f) => f.sourceType === 'wordpress')
+    for (const f of wpFeeds) {
+      if (!feedTags[f.id]) {
+        invoke<Tag[]>('get_feed_tags', { feedId: f.id })
+          .then((ftags) => {
+            setFeedTags((prev) => ({ ...prev, [f.id]: ftags }))
+            if (ftags.length > 0) {
+              setExpandedFeeds((prev) => ({ ...prev, [f.id]: true }))
+            }
+          })
+          .catch(() => {})
+      }
+    }
+  }, [feeds])
   
   useEffect(() => {
     if (isTauriEnv) {
       loadFeeds()
-      loadTags()
     }
   }, [])
 
@@ -114,22 +165,6 @@ export default function Sidebar() {
     }
   }
 
-  const loadTags = async () => {
-    try {
-      const tagList = await invoke<Tag[]>('get_all_tags')
-      setTags(tagList)
-    } catch (error) {
-      console.error('Failed to load tags:', error)
-    }
-  }
-  
-  // Refresh tags when location changes (e.g. after adding a tag in ArticleView)
-  useEffect(() => {
-    if (isTauriEnv) {
-      loadTags()
-    }
-  }, [location.pathname])
-  
   const groupedFeeds = useMemo(() => {
     const groups: Record<string, Feed[]> = {}
     feeds.forEach(feed => {
@@ -187,6 +222,20 @@ export default function Sidebar() {
       },
       {
         icon: Trash2,
+        label: '清空文章',
+        danger: true,
+        onClick: async () => {
+          try {
+            const count = await invoke<number>('delete_feed_articles', { feedId: feed.id })
+            toast.success(`已删除 ${count} 篇文章`)
+            loadFeeds()
+          } catch (e: any) {
+            toast.error('删除失败')
+          }
+        }
+      },
+      {
+        icon: Trash2,
         label: t('sidebar.delete'),
         danger: true,
         onClick: () => handleDeleteFeed(feed)
@@ -235,6 +284,11 @@ export default function Sidebar() {
             </div>
             
             <div className={`flex items-center gap-1 ${sidebarCollapsed ? 'flex-col' : ''}`}>
+              <button onClick={handleSyncMarket} onContextMenu={preventContextMenu}
+                className="p-2 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title={t('marketData.sync')}>
+                <BarChart3 className="w-5 h-5" />
+              </button>
               {!sidebarCollapsed && (
                 <button
                   onClick={() => navigate('/settings')}
@@ -353,37 +407,42 @@ export default function Sidebar() {
               </Link>
             </div>
           </div>
-          
-          {/* Tags - Hide when collapsed for now */}
-          {!sidebarCollapsed && tags.length > 0 && (
-            <div className="mb-6">
+
+          {/* Eastmoney Research Reports — 4 direct sub-items */}
+          <div className="mb-6">
+            {!sidebarCollapsed && (
               <div className="flex items-center justify-between px-2 mb-2">
                 <span className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-                  {t('sidebar.tags')}
-                </span>
-                <span className="text-xs text-slate-400 dark:text-slate-500">
-                  {tags.length}
+                  {t('eastmoney.title')}
                 </span>
               </div>
-              <div className="space-y-1">
-                {tags.map(tag => (
-                  <Link
-                    key={tag.id}
-                    to={`/tags/${tag.id}`}
-                    onContextMenu={preventContextMenu}
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 cursor-pointer group ${
-                      isActive(`/tags/${tag.id}`) 
-                        ? 'bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400' 
-                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                    }`}
-                  >
-                    <TagIcon className="w-4 h-4 flex-shrink-0" />
-                    <span className="font-medium truncate">{tag.name}</span>
-                  </Link>
-                ))}
-              </div>
+            )}
+            <div className="space-y-1">
+              {([
+                { key: 'stock', labelKey: 'eastmoney.stock' },
+                { key: 'industry', labelKey: 'eastmoney.industry' },
+                { key: 'macro', labelKey: 'eastmoney.macro' },
+                { key: 'morning', labelKey: 'eastmoney.morning' },
+              ]).map((cat) => (
+                <Link
+                  key={cat.key}
+                  to={`/eastmoney/${cat.key}`}
+                  onContextMenu={preventContextMenu}
+                  className={`flex items-center gap-3 py-2 rounded-lg transition-all duration-200 cursor-pointer group ${
+                    sidebarCollapsed ? 'justify-center px-2' : 'px-3'
+                  } ${
+                    isActive(`/eastmoney/${cat.key}`)
+                      ? 'bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400'
+                      : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                  title={t(cat.labelKey)}
+                >
+                  <FileText className="w-4 h-4 flex-shrink-0" />
+                  {!sidebarCollapsed && <span className="text-sm truncate">{t(cat.labelKey)}</span>}
+                </Link>
+              ))}
             </div>
-          )}
+          </div>
           
           {/* Group List */}
           <GroupList collapsed={sidebarCollapsed} />
@@ -444,37 +503,76 @@ export default function Sidebar() {
                     {(!collapsedGroups[group] || group === t('sidebar.uncategorized')) && (
                       <div className={group !== t('sidebar.uncategorized') ? 'pl-2 space-y-1' : 'space-y-1'}>
                         {groupFeeds.map(feed => (
-                          <Link
-                            key={feed.id}
-                            to={`/feed/${feed.id}`}
-                            onContextMenu={(e) => handleFeedContextMenu(e, feed)}
-                            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 cursor-pointer group ${
-                              isActive(`/feed/${feed.id}`) 
-                                ? 'bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400' 
-                                : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                            }`}
-                          >
-                            <FeedIcon feed={feed} />
-                            <span className="font-medium truncate flex-1">{feed.title}</span>
-                            <div className="flex items-center gap-1">
-                              <button
-                                onClick={(e) => {
-                                  e.preventDefault()
-                                  setEditingFeed(feed)
-                                }}
-                                onContextMenu={preventContextMenu}
-                                className="p-1 opacity-0 group-hover:opacity-100 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-all text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-                                title={t('sidebar.edit')}
-                              >
-                                <Edit2 className="w-3 h-3" />
-                              </button>
-                              {feed.unreadCount && feed.unreadCount > 0 && (
-                                <span className="px-2 py-0.5 text-xs font-semibold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-full">
-                                  {feed.unreadCount > 99 ? '99+' : feed.unreadCount}
-                                </span>
-                              )}
-                            </div>
-                          </Link>
+                          <div key={feed.id}>
+                            <Link
+                              to={`/feed/${feed.id}`}
+                              onContextMenu={(e) => handleFeedContextMenu(e, feed)}
+                              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 cursor-pointer group ${
+                                isActive(`/feed/${feed.id}`) 
+                                  ? 'bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400' 
+                                  : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                              }`}
+                            >
+                              <FeedIcon feed={feed} />
+                              <span className="font-medium truncate flex-1">{feed.title}</span>
+                              <div className="flex items-center gap-1">
+                                {feed.sourceType === 'wordpress' && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.preventDefault()
+                                      e.stopPropagation()
+                                      toggleFeedExpand(feed.id)
+                                    }}
+                                    onContextMenu={preventContextMenu}
+                                    className="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-all text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                                    title={t('sidebar.expandColumns')}
+                                  >
+                                    {expandedFeeds[feed.id] ? (
+                                      <ChevronDown className="w-3.5 h-3.5" />
+                                    ) : (
+                                      <ChevronRight className="w-3.5 h-3.5" />
+                                    )}
+                                  </button>
+                                )}
+                                <button
+                                  onClick={(e) => {
+                                    e.preventDefault()
+                                    setEditingFeed(feed)
+                                  }}
+                                  onContextMenu={preventContextMenu}
+                                  className="p-1 opacity-0 group-hover:opacity-100 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-all text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                                  title={t('sidebar.edit')}
+                                >
+                                  <Edit2 className="w-3 h-3" />
+                                </button>
+                                {feed.unreadCount && feed.unreadCount > 0 && (
+                                  <span className="px-2 py-0.5 text-xs font-semibold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-full">
+                                    {feed.unreadCount > 99 ? '99+' : feed.unreadCount}
+                                  </span>
+                                )}
+                              </div>
+                            </Link>
+                            {/* WordPress column sub-items */}
+                            {feed.sourceType === 'wordpress' && expandedFeeds[feed.id] && (feedTags[feed.id] || []).length > 0 && (
+                              <div className="ml-7 space-y-0.5 mt-0.5">
+                                {feedTags[feed.id].map((tag) => (
+                                  <Link
+                                    key={tag.id}
+                                    to={`/tags/${tag.id}`}
+                                    onContextMenu={preventContextMenu}
+                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-all duration-200 cursor-pointer ${
+                                      isActive(`/tags/${tag.id}`)
+                                        ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-600 dark:text-primary-400'
+                                        : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                    }`}
+                                  >
+                                    <TagIcon className="w-3.5 h-3.5 flex-shrink-0" />
+                                    <span className="truncate">{tag.name}</span>
+                                  </Link>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         ))}
                       </div>
                     )}

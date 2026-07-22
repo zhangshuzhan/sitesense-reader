@@ -30,6 +30,7 @@
     "i18next": "^25.8.13",
     "lucide-react": "^0.564.0",
     "marked": "^17.0.3",
+    "pdfjs-dist": "^6.1.200",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-i18next": "^16.5.4",

@@ -12,6 +12,10 @@ export interface Feed {
   errorMessage?: string
   createdAt: string
   updatedAt: string
+  /** "rss" (default) or "wordpress" (SiteSense dual-mode source). */
+  sourceType?: 'rss' | 'wordpress'
+  /** Present only on the local machine; never persisted to our servers. */
+  authToken?: string | null
   unreadCount?: number
 }
 
@@ -99,6 +103,67 @@ export interface FeatureMapping {
   summaryProfileId: string
   translationProfileId: string
   batchSummaryProfileId: string
+}
+
+export interface FinancialInsight {
+  /** Short summary of the article's market/financial takeaway. */
+  summary: string
+  /** "bullish" | "bearish" | "neutral" */
+  sentiment: string
+  /** -100 (very bearish) .. 100 (very bullish) */
+  sentimentScore: number
+  /** Detected finance keywords / tickers. */
+  keywords: string[]
+  /** "ai" (cloud LLM) or "local" (heuristic fallback) */
+  source: string
+  /** Model id when source === "ai", otherwise null. */
+  model: string | null
+}
+
+export interface WordPressProbe {
+  feed?: { title: string; url: string } | null
+  articles?: unknown[]
+  mode: string
+  auth: string
+  reachable: boolean
+  errorMessage?: string | null
+}
+
+export interface SpotCheck {
+  code: string
+  name: string
+  price: number
+  changePct: number
+}
+
+export interface MarketDataCheck {
+  success: boolean
+  stockCount: number
+  latestDate: string
+  expectedCount: number
+  countOk: boolean
+  nullCheckOk: boolean
+  anomalyOk: boolean
+  spotChecks: SpotCheck[]
+  errors: string[]
+}
+
+export interface EastmoneyReport {
+  id: number
+  /** stock | industry | macro | morning */
+  category: string
+  title: string
+  orgName: string
+  orgSname: string
+  stockName?: string | null
+  stockCode?: string | null
+  industryName?: string | null
+  publishDate: string
+  infoCode: string
+  summary?: string | null
+  isRead: boolean
+  pdfPath?: string | null
+  createdAt: string
 }
 
 export interface Group {
